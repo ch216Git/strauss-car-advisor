@@ -11,6 +11,7 @@ import openpyxl
 
 from app.errors import AmbiguousVehicleError, VehicleNotFoundError
 from app.models import VehicleRecord
+from app.rules import load_rules
 from app.vehicle_repository import VehicleRepository
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -20,9 +21,6 @@ CATALOG_SHEET = "קטלוג רכבים"
 TAX_YEAR = 2026
 # The catalog has no vehicle-type column; these are the only codes present in the CSV.
 CANDIDATE_VEHICLE_TYPE_CODES = (1, 2)
-
-# Catalog propulsion label -> CSV code, as observed in the data (see VehicleRecord.propulsion_code).
-PROPULSION_CODES = {"בנזין": 0, "היברידי": 1, "פלאג-אין": 2, "חשמלי": 3}
 
 
 @dataclass
@@ -103,7 +101,12 @@ def check(repo: VehicleRepository, vehicle: CatalogVehicle) -> CheckResult:
     return CheckResult(vehicle, record, type_code, None)
 
 
-def anomalies(result: CheckResult) -> list[str]:
+def propulsion_codes() -> dict[str, int]:
+    """Catalog propulsion label -> CSV code, from rules.json valueOfUse.driveField."""
+    return {name: code for code, name in load_rules().value_of_use.drive_field.items()}
+
+
+def anomalies(result: CheckResult, propulsion_codes: dict[str, int]) -> list[str]:
     if result.record is None:
         return [result.error or "not found"]
     c, r = result.catalog, result.record
@@ -112,7 +115,7 @@ def anomalies(result: CheckResult) -> list[str]:
         issues.append(f"use value: catalog {c.use_value:,} vs CSV {r.use_value:,} (diff {c.use_value - r.use_value:+,})")
     if c.list_price != r.list_price:
         issues.append(f"list price: catalog {c.list_price:,} vs CSV {r.list_price:,} (diff {c.list_price - r.list_price:+,})")
-    if PROPULSION_CODES.get(c.propulsion) != r.propulsion_code:
+    if propulsion_codes.get(c.propulsion) != r.propulsion_code:
         issues.append(f"propulsion: catalog '{c.propulsion}' vs CSV code {r.propulsion_code}")
     if c.manufacturer != r.manufacturer:
         issues.append(f"manufacturer name: catalog '{c.manufacturer}' vs CSV '{r.manufacturer}'")
@@ -160,9 +163,10 @@ def main() -> None:
     print(f"  List price matches: {sum(res.record.list_price == res.catalog.list_price for res in found)} / {len(found)}")
 
     print("\nAnomalies")
+    codes = propulsion_codes()
     any_issue = False
     for res in results:
-        for issue in anomalies(res):
+        for issue in anomalies(res, codes):
             any_issue = True
             print(f"  {res.catalog.vehicle_id} {res.catalog.commercial_name}: {issue}")
     if not any_issue:

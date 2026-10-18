@@ -16,7 +16,7 @@ class VehicleRecord:
     fuel_type_code: int
     commercial_name: str
     is_automatic: bool
-    # Observed in the data: 0-regular, 1-hybrid, 2-plug-in, 3-electric.
+    # Code meanings are defined in rules.json (valueOfUse.driveField).
     # The CSV header ("1-חשמלי.2-היברידי.3-פלג-אין") does not match the actual values.
     propulsion_code: int
     green_score: int

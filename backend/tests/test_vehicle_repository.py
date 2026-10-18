@@ -5,6 +5,7 @@ import pytest
 
 from app.csv_columns import COLUMN_TO_FIELD, CSV_ENCODING
 from app.errors import AmbiguousVehicleError, VehicleNotFoundError
+from app.rules import load_rules
 from app.vehicle_repository import DEFAULT_CSV_PATH, VehicleRepository
 
 # Rows copied by hand from use_value_2026.csv; they act as an independent oracle,
@@ -90,6 +91,37 @@ def test_unknown_key_raises_not_found(repo: VehicleRepository) -> None:
 
     with pytest.raises(VehicleNotFoundError):
         find(repo, key)
+
+
+def test_lookup_key_comes_from_rules(repo: VehicleRepository) -> None:
+    key_columns = load_rules().value_of_use.key
+
+    assert repo.key_fields == tuple(COLUMN_TO_FIELD[column] for column in key_columns)
+
+
+def test_partial_key_is_rejected(repo: VehicleRepository) -> None:
+    tax_year, registration_year, vehicle_type_code, manufacturer_code, _ = AUDI_S5_KEY
+
+    with pytest.raises(TypeError, match="model_code"):
+        repo.find_exact(
+            tax_year=tax_year,
+            registration_year=registration_year,
+            vehicle_type_code=vehicle_type_code,
+            manufacturer_code=manufacturer_code,
+        )
+
+
+def test_custom_key_columns_change_the_lookup(tmp_path: Path) -> None:
+    # A repository built with a different key looks up by that key only.
+    header, rows = read_raw_rows(DEFAULT_CSV_PATH)
+    csv_path = tmp_path / "two_rows.csv"
+    write_rows(csv_path, header, [rows[0], rows[1]])
+    repo = VehicleRepository(csv_path, key_columns=["קוד תוצר", "קוד דגם"])
+    _, _, _, manufacturer_code, model_code = AUDI_S5_KEY
+
+    assert repo.find_exact(manufacturer_code=manufacturer_code, model_code=model_code).commercial_name == "S5"
+    with pytest.raises(TypeError):
+        find(repo, AUDI_S5_KEY)
 
 
 def test_no_fallback_to_commercial_name(repo: VehicleRepository) -> None:
