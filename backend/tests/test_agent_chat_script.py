@@ -41,7 +41,7 @@ def details_then_reply() -> list[Message]:
     return [
         Message.assistant(tool_calls=[
             ToolCall("c1", "save_employee_details", {"occupation": "מנהל/ת מוצר", "base_salary": 18500, "bonus": 0}),
-            ToolCall("c2", "find_car", {"query": "קורולה קרוס"}),
+            ToolCall("c2", "find_car", {"query": "קורולה קרוס", "purpose": "information"}),
             ToolCall("c3", "set_current_car", {"car_id": "CAR-09", "participation": 999}),  # invented: refused
         ]),
         Message.assistant("כמה אחוז פנסיה?"),

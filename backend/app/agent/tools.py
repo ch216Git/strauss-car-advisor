@@ -33,6 +33,7 @@ from app.comparison import (
     Employee,
     Situation,
     Waiver,
+    check_eligibility,
     compare,
     display_shekels,
     eligible_alternatives,
@@ -85,6 +86,8 @@ class ToolError:
     missing: tuple[str, ...] = ()  # for MISSING_DETAILS
     reason: str | None = None  # NotEligibleError reason, for NOT_ELIGIBLE
     question_ids: tuple[str, ...] = ()  # for BLOCKED_BY_REPRESENTATIVE
+    stage: str | None = None  # MISSING_DETAILS: "eligibility" when only the deciding facts are asked
+    facts: dict[str, object] | None = None  # NOT_ELIGIBLE: the data the verdict rests on (catalogue, rules)
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,11 +328,33 @@ def compare_alternative(
         )
 
     alternative: Situation = Waiver() if waiver else CompanyCar(car_id, participation)
+
+    # Eligibility first, on the facts known so far (Step 3 decides): no salary questions for an
+    # alternative the employee cannot select, and only the facts that can change the verdict.
+    details = state.details
+    try:
+        gate = check_eligibility(
+            alternative, occupation_name=details.occupation, eligible_children=details.eligible_children,
+            current=details.current, rules=ctx.rules, catalog=ctx.catalog,
+        )
+    except NotEligibleError as e:
+        return ToolOutcome(
+            state,
+            ToolError(ToolErrorCode.NOT_ELIGIBLE, str(e), reason=e.reason, facts=_eligibility_facts(e.reason, alternative, state, ctx)),
+        )
+    if gate.missing:
+        return ToolOutcome(
+            state,
+            ToolError(
+                ToolErrorCode.MISSING_DETAILS, "details that decide eligibility are needed first",
+                missing=gate.missing, stage="eligibility",
+            ),
+        )
+
     missing = missing_details(state, ctx.rules, alternative)
     if missing:
         return _error(state, ToolErrorCode.MISSING_DETAILS, "details needed before comparing", missing=missing)
 
-    details = state.details
     employee = Employee(
         occupation=details.occupation,
         base_salary=details.base_salary,
@@ -415,6 +440,25 @@ def _catalogue_id(car_id: str | None, ctx: ToolContext) -> str | None:
     if car_id is None or car_id in ctx.catalog.cars:
         return car_id
     return ctx.car_search.car_id(car_id) or car_id
+
+
+def _eligibility_facts(reason: str, alternative: Situation, state: ConversationState, ctx: ToolContext) -> dict[str, object]:
+    """What a refusal rests on, read from the workbook, the CSV and rules.json; nothing is decided here."""
+    facts: dict[str, object] = {"new_selection": True}  # eligibility applies to a newly selected alternative
+    occupation = ctx.catalog.occupations.get(state.details.occupation or "")
+    if occupation is not None:
+        facts.update(occupation=occupation.name, employee_group=occupation.group)
+    if isinstance(alternative, CompanyCar):
+        car = ctx.catalog.cars[alternative.car_id]
+        facts.update(car_id=car.car_id, commercial_name=_car_summary(car, ctx).commercial_name, car_group=car.group)
+    if reason == "group_too_high":
+        facts["choose_from"] = ctx.rules.choose_from
+    if reason == "not_enough_children":
+        family = ctx.rules.family_track
+        facts.update(
+            min_children=family.min_children, child_max_age=family.child_max_age, eligible_children=state.details.eligible_children
+        )
+    return facts
 
 
 def _with_details(state: ConversationState, details: EmployeeDetails) -> ConversationState:

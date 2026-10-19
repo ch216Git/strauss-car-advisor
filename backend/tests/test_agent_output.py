@@ -49,7 +49,7 @@ E001_DETAILS = {
 @pytest.fixture(scope="module")
 def e001(ctx: ToolContext) -> ConversationState:
     provider = ScriptedProvider(
-        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס"})),
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
         Message.assistant("איזו חלופה?"),
     )
@@ -60,7 +60,7 @@ def atto_turn(ctx: ToolContext, state: ConversationState, final: str, participat
     arguments = {"car_id": "CAR-10"} if participation is None else {"car_id": "CAR-10", "participation": participation}
     text = "ומה עם אטו 3?" if participation is None else f"ומה עם אטו 3 בהשתתפות {participation}?"
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "אטו 3"})), calls(("compare_alternative", arguments)), Message.assistant(final)
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})), calls(("compare_alternative", arguments)), Message.assistant(final)
     )
     return run_turn(state, text, provider, ctx)
 
@@ -157,7 +157,7 @@ def test_family_rule_numbers_come_from_the_tool_result(ctx: ToolContext, e001: C
     rule = ctx.rules.family_track
     question = f"כמה ילדים עד גיל {rule.child_max_age} יש לך? צריך לפחות {rule.min_children}."
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "קרניבל"})), calls(("compare_alternative", {"car_id": "CAR-19"})), Message.assistant(question)
+        calls(("find_car", {"query": "קרניבל", "purpose": "information"})), calls(("compare_alternative", {"car_id": "CAR-19"})), Message.assistant(question)
     )
 
     turn = run_turn(e001, "ומה עם קרניבל?", provider, ctx)
@@ -205,7 +205,7 @@ def test_comparison_reply_uses_only_engine_figures(ctx: ToolContext, e001: Conve
 
 def test_timings_per_provider_call_and_round(ctx: ToolContext) -> None:
     ticks = itertools.count()
-    provider = ScriptedProvider(calls(("find_car", {"query": "טוסון"})), Message.assistant("מצאתי"))
+    provider = ScriptedProvider(calls(("find_car", {"query": "טוסון", "purpose": "information"})), Message.assistant("מצאתי"))
 
     turn = run_turn(ConversationState("c-1"), "יש לי טוסון", provider, ctx, clock=lambda: float(next(ticks)))
 
@@ -235,7 +235,7 @@ class RecordingProvider:
 
 def test_started_event_is_emitted_before_each_provider_call(ctx: ToolContext) -> None:
     events: list[str] = []
-    provider = RecordingProvider(events, calls(("find_car", {"query": "טוסון"})), Message.assistant("מצאתי"))
+    provider = RecordingProvider(events, calls(("find_car", {"query": "טוסון", "purpose": "information"})), Message.assistant("מצאתי"))
 
     run_turn(ConversationState("c-1"), "יש לי טוסון", provider, ctx, events=events.append)
 
@@ -278,7 +278,7 @@ def test_events_carry_no_employee_values(ctx: ToolContext) -> None:
     events: list[str] = []
     provider = RecordingProvider(
         events,
-        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס"})),
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         Message.assistant("תודה"),
     )
 

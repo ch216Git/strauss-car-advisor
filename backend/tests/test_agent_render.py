@@ -193,8 +193,8 @@ def test_family_track_asks_children_then_shows_the_share(ctx: ToolContext, ready
     asked, _ = one_turn(ctx, ready, "ומה עם קרניבל?", calls(("compare_alternative", {"car": "קרניבל"})))
 
     assert asked.stop == TurnStop.RENDERED
-    assert asked.reply == "\n".join([
-        "כדי לחשב את השינוי בנטו חסר לי עוד פרט אחד:",
+    assert asked.reply == "\n".join([  # children decide eligibility, so they are asked first, alone
+        "כדי לבדוק אם החלופה הזו אפשרית עבורך, צריך קודם לדעת:",
         f"• מספר הילדים שלך עד גיל {ctx.rules.family_track.child_max_age} (נדרש לרכב מהמסלול המשפחתי)",
     ])
     assert unsupported_numbers(asked.reply, asked.state) == ()
@@ -291,11 +291,10 @@ def test_ambiguous_car_lists_the_candidates(ctx: ToolContext) -> None:
 FALLBACKS = {
     "two question marks": ("ready", "כמה ישתנה עם אטו 3? ומה זה שווי שימוש?", [ATTO]),
     "two question words": ("ready", "כמה ישתנה עם אטו 3 ואיך מחושב שווי שימוש", [ATTO]),
-    "not eligible": ("ready", "ומה עם טסלה מודל 3?", [("compare_alternative", {"car": "טסלה מודל 3"})]),
     "unknown occupation": ("new", "אני מנכ\"ל", [("save_employee_details", {"occupation": "מנכ\"ל"})]),
     "car not found": ("new", "יש לי מאזדה CX-5 2019 בהשתתפות 300", [("set_current_car", {"car": "מאזדה CX-5 2019", "participation": 300})]),
     "not stated by the employee": ("ready", "ומה עם אטו 3?", [("compare_alternative", {"car": "אטו 3", "participation": 450})]),
-    "find_car only": ("ready", "ומה עם אטו 3?", [("find_car", {"query": "אטו 3"})]),
+    "find_car only": ("ready", "ומה עם אטו 3?", [("find_car", {"query": "אטו 3", "purpose": "information"})]),
     "list_alternatives": ("ready", "מה האפשרויות שלי?", [("list_alternatives", {})]),
     "two comparisons": ("ready", "אטו 3 או טוסון?", [ATTO, ("compare_alternative", {"car": "טוסון"})]),
     "state changed after the comparison": ("ready", "ומה עם אטו 3?", [ATTO, ("save_employee_details", {"base_salary": 18500})]),
@@ -315,7 +314,7 @@ def test_other_rounds_go_to_the_provider(ctx: ToolContext, ready: ConversationSt
 
 def test_a_comparison_in_a_later_round_keeps_the_provider_reply(ctx: ToolContext, ready: ConversationState) -> None:
     turn, provider = one_turn(
-        ctx, ready, "ומה עם אטו 3?", calls(("find_car", {"query": "אטו 3"})), calls(ATTO), Message.assistant("לפי הערכה: +661 ₪.")
+        ctx, ready, "ומה עם אטו 3?", calls(("find_car", {"query": "אטו 3", "purpose": "information"})), calls(ATTO), Message.assistant("לפי הערכה: +661 ₪.")
     )
 
     assert (provider.calls, turn.stop, turn.reply) == (3, TurnStop.REPLIED, "לפי הערכה: +661 ₪.")

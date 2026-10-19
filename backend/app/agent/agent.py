@@ -113,13 +113,18 @@ def run_turn(
         for call in reply.tool_calls:
             execution = execute(call, state, ctx)
             state = execution.state
-            results.append(ToolResult(call.call_id, call.name, execution.content))
-            round_calls.append(RoundCall(call.name, execution.content, execution.comparison))
+            results.append(ToolResult(call.call_id, call.name, execution.content))  # answers the call as made
+            tool = execution.tool or call.name  # what actually ran (find_car "alternative" runs a comparison)
+            round_calls.append(
+                RoundCall(tool, execution.content, execution.comparison, via=call.name if tool != call.name else None)
+            )
             if execution.comparison is not None:
                 comparison = execution.comparison
         state = with_messages(state, Message.tool(results))
         timings.append(RoundTiming(provider_seconds, clock() - tools_started))
-        outcomes = ", ".join(f"{r.name}={_outcome(r.content)}" for r in results)
+        outcomes = ", ".join(
+            f"{c.via}→{c.name}={_outcome(c.content)}" if c.via else f"{c.name}={_outcome(c.content)}" for c in round_calls
+        )
         emit(f"round {number}: tools {timings[-1].tool_seconds:.2f}s: {outcomes}")
 
         if rounds == 0:

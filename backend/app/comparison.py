@@ -103,6 +103,14 @@ class EligibleOption:
 
 
 @dataclass(frozen=True, slots=True)
+class EligibilityCheck:
+    """The verdict on the facts known so far: eligible (basis set), or the facts that would decide it."""
+
+    basis: str | None  # as ComparisonResult.eligibility_basis; None while undecided
+    missing: tuple[str, ...] = ()  # Employee fields whose unknown value can change the verdict
+
+
+@dataclass(frozen=True, slots=True)
 class ComparisonResult:
     group: str  # the employee's group, from the occupation
     eligibility_basis: str  # "own_group_or_lower", "family_track", "waiver_allowed" or "keeps_current_situation"
@@ -191,6 +199,47 @@ def eligible_alternatives(
     return tuple(options)
 
 
+def check_eligibility(
+    alternative: Situation,
+    *,
+    occupation_name: str | None,
+    eligible_children: int | None,
+    current: Situation | None = None,
+    rules: Rules | None = None,
+    catalog: Catalog | None = None,
+) -> EligibilityCheck:
+    """May the employee newly select alternative, judged on the facts known so far?
+
+    The same rule as compare(): keeping the current situation is always allowed, otherwise
+    _check_eligibility decides. An unknown fact is reported in missing only when its value can change
+    the verdict: an unknown occupation is tried with every occupation in the workbook table, and a
+    verdict that holds for all of them stands. Raises NotEligibleError exactly as compare() would.
+    """
+    rules = rules or load_rules()
+    catalog = catalog or load_catalog()
+    _check_supported(rules)
+    if current is not None and _same_situation(current, alternative):
+        return EligibilityCheck("keeps_current_situation")
+    occupations = (
+        [_occupation(occupation_name, rules, catalog)] if occupation_name is not None
+        else [_occupation(name, rules, catalog) for name in catalog.occupations]
+    )
+    bases: set[str] = set()
+    refusals: list[NotEligibleError] = []
+    for occupation in occupations:
+        try:
+            bases.add(_check_eligibility(occupation, eligible_children, alternative, rules, catalog))
+        except _EligibilityUnknown as e:
+            return EligibilityCheck(None, (e.field,))
+        except NotEligibleError as e:
+            refusals.append(e)
+    if refusals and bases:  # the occupation decides
+        return EligibilityCheck(None, ("occupation",))
+    if refusals:
+        raise refusals[0]
+    return EligibilityCheck(bases.pop() if len(bases) == 1 else None)
+
+
 def display_shekels(amount: float) -> int:
     """Whole shekels for display (rules netMethod.rounding.display), half rounded up."""
     return int(Decimal(str(amount)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
@@ -246,6 +295,14 @@ def _same_situation(current: Situation, alternative: Situation) -> bool:
     return isinstance(current, CompanyCar) and isinstance(alternative, CompanyCar) and current.car_id == alternative.car_id
 
 
+class _EligibilityUnknown(ValueError):
+    """A fact the eligibility rule needs is unknown. A ValueError, as compare() has always raised for it."""
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field  # the Employee field
+
+
 def _check_eligibility(
     occupation: Occupation, eligible_children: int | None, alternative: Situation, rules: Rules, catalog: Catalog
 ) -> str:
@@ -257,7 +314,9 @@ def _check_eligibility(
     car = _car(alternative.car_id, catalog)
     if is_family_track_car(car, rules):
         if eligible_children is None:
-            raise ValueError("The number of children is needed to check a family-track car; it is unknown")
+            raise _EligibilityUnknown(
+                "eligible_children", "The number of children is needed to check a family-track car; it is unknown"
+            )
         check_family_track_eligibility(car, eligible_children, rules)
         return "family_track"
     if car.group not in rules.group_order:

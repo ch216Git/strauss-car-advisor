@@ -41,6 +41,8 @@ from app.salary import NetBreakdown
 # --- Tool specs ----------------------------------------------------------------------
 
 _NUMBER = {"type": "number", "minimum": 0}
+# find_car purposes; only "alternative" continues, to the existing compare_alternative(car=query) path.
+FIND_CAR_PURPOSES = ("alternative", "current", "information")
 _CAR_WORDS = {"type": "string", "description": "One car exactly as the employee wrote it, Hebrew or English"}
 
 SPECS = (
@@ -67,9 +69,27 @@ SPECS = (
     ),
     ToolSpec(
         "find_car",
-        "Find ONE catalogue car from the employee's own words, in Hebrew or English, as written. "
-        "identified: use cars[0].car_id. candidates: ask the employee which one. not_found: not in the catalogue.",
-        {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        "Look up ONE catalogue car from the employee's own words, in Hebrew or English, as written. purpose says "
+        "why, and is required: 'alternative' runs the whole comparison for that car in this same call (exactly as "
+        "compare_alternative with car) - do not look the car up first and compare in another call. "
+        "'current' and 'information' only return the matching cars.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "purpose": {
+                    "type": "string",
+                    "enum": list(FIND_CAR_PURPOSES),
+                    "description": (
+                        "alternative: the employee asks about getting, switching to or the net-pay effect of this car. "
+                        "current: this is the employee's car today (then set it with set_current_car). "
+                        "information: the employee only asks what this car is, without choosing it. "
+                        "If unsure, use information."
+                    ),
+                },
+            },
+            "required": ["query", "purpose"],
+        },
     ),
     ToolSpec(
         "set_current_car",
@@ -134,25 +154,44 @@ class Execution:
     state: ConversationState
     content: dict[str, Any]  # JSON-compatible ToolResult content
     comparison: ComparisonSummary | None = None  # set when a comparison was calculated
+    tool: str = ""  # the tool that actually ran: compare_alternative for find_car(purpose="alternative")
 
 
 def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execution:
-    """Validate and run one tool call; failures come back as {"ok": false, "error": ...}."""
+    """Validate and run one tool call; failures come back as {"ok": false, "error": ...}.
+
+    find_car with purpose "alternative" runs as compare_alternative(car=query): the model stated the
+    intent, and the comparison goes through the very same path (car guard, grounding, eligibility gate).
+    The result still answers the find_car call (same name and call ID); Execution.tool says what ran.
+    """
     spec = _SPEC_BY_NAME.get(call.name)
     if spec is None:
-        return Execution(state, _failure("unknown_tool", f"no tool named {call.name!r}; tools: {list(_SPEC_BY_NAME)}"))
+        return Execution(
+            state, _failure("unknown_tool", f"no tool named {call.name!r}; tools: {list(_SPEC_BY_NAME)}"), tool=call.name
+        )
     try:
         arguments = validate_arguments(spec.parameters, call.arguments)
     except ArgumentError as e:
-        return Execution(state, _failure("invalid_arguments", str(e)))
+        return Execution(state, _failure("invalid_arguments", str(e)), tool=call.name)
 
+    tool = call.name
+    if tool == "find_car":
+        if arguments.pop("purpose") == "alternative":
+            tool, arguments = "compare_alternative", {"car": arguments["query"]}
+    execution = replace(_run(tool, arguments, state, ctx), tool=tool)
+    if tool != call.name:
+        execution = replace(execution, content={**execution.content, "ran": tool})
+    return execution
+
+
+def _run(tool: str, arguments: dict[str, Any], state: ConversationState, ctx: ToolContext) -> Execution:
     if "car" in arguments:
-        resolved = _resolve_car_words(call.name, arguments, state, ctx)
+        resolved = _resolve_car_words(tool, arguments, state, ctx)
         if isinstance(resolved, Execution):
             return resolved
         state, arguments = resolved
 
-    if call.name in _GUARDED and arguments.get("car_id") is not None:
+    if tool in _GUARDED and arguments.get("car_id") is not None:
         car_id = _catalogue_id(arguments["car_id"], ctx)
         if car_id not in state.usable_car_ids:
             return Execution(
@@ -165,7 +204,7 @@ def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execu
             )
         arguments["car_id"] = car_id
 
-    ungrounded = _ungrounded_facts(call.name, arguments, employee_texts(state))
+    ungrounded = _ungrounded_facts(tool, arguments, employee_texts(state))
     if ungrounded:
         return Execution(
             state,
@@ -175,7 +214,7 @@ def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execu
             ),
         )
 
-    outcome = _RUN[call.name](state, ctx, **arguments)
+    outcome = _RUN[tool](state, ctx, **arguments)
     new_state = _track_cars(outcome.state, outcome.result, ctx)
     if isinstance(outcome.result, ToolError):
         return Execution(new_state, _error_content(outcome.result, ctx.rules))
@@ -319,6 +358,10 @@ def _error_content(error: ToolError, rules: Rules) -> dict[str, Any]:
             content["error"][name] = list(getattr(error, name))
     if error.reason:
         content["error"]["reason"] = error.reason
+    if error.stage:
+        content["error"]["stage"] = error.stage
+    if error.facts:
+        content["error"]["facts"] = dict(error.facts)
     if "eligible_children" in error.missing:
         content["error"]["family_track_rule"] = _family_track_rule(rules)
     return content

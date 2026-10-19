@@ -151,7 +151,7 @@ def test_zero_commissions_need_the_employee_to_say_none(ctx: ToolContext) -> Non
 def test_invented_current_participation_is_refused(ctx: ToolContext) -> None:
     result = turn(
         ConversationState("c-1"), "יש לי קורולה קרוס", ctx,
-        calls(("find_car", {"query": "קורולה קרוס"})),
+        calls(("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
     )
 
@@ -178,7 +178,7 @@ E001_DETAILS = {
 def e001(ctx: ToolContext) -> ConversationState:
     return turn(
         ConversationState("c-1"), E001, ctx,
-        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס"})),
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
     ).state
 
@@ -190,12 +190,12 @@ def test_facts_from_an_earlier_message_count(e001: ConversationState) -> None:
 def test_invented_alternative_participation_is_refused(ctx: ToolContext, e001: ConversationState) -> None:
     invented = turn(
         e001, "כמה עם אטו 3?", ctx,
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10", "participation": 450})),
     )
     stated = turn(
         e001, "כמה עם אטו 3 אם ההשתתפות 450?", ctx,
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10", "participation": 450})),
     )
 
@@ -209,7 +209,7 @@ def test_car_identified_from_the_models_own_query_is_not_usable(ctx: ToolContext
     # The employee said "קורולה"; the model searched for "קורולה קרוס" itself.
     result = turn(
         ConversationState("c-1"), "יש לי קורולה, השתתפות 300", ctx,
-        calls(("find_car", {"query": "קורולה קרוס"})),
+        calls(("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
     )
 
@@ -220,7 +220,7 @@ def test_car_identified_from_the_models_own_query_is_not_usable(ctx: ToolContext
 
 
 def ambiguous_corolla(ctx: ToolContext) -> ConversationState:
-    return turn(ConversationState("c-1"), "יש לי קורולה, השתתפות 250", ctx, calls(("find_car", {"query": "קורולה"}))).state
+    return turn(ConversationState("c-1"), "יש לי קורולה, השתתפות 250", ctx, calls(("find_car", {"query": "קורולה", "purpose": "information"}))).state
 
 
 @pytest.mark.parametrize(

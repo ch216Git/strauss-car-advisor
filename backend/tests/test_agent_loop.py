@@ -48,7 +48,7 @@ class EndlessToolCaller:
 
     def complete(self, system, messages, tools) -> Message:
         self.calls += 1
-        return calls(("find_car", {"query": "קורולה קרוס"}))
+        return calls(("find_car", {"query": "קורולה קרוס", "purpose": "information"}))
 
 
 _ids = iter(range(10_000))
@@ -83,7 +83,7 @@ E001_MESSAGE = "אני מנהלת מוצר, 18,500 ברוטו בלי עמלות 
 def e001_ready(ctx: ToolContext) -> ConversationState:
     """E-001 with details and current car saved through the loop."""
     provider = ScriptedProvider(
-        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס"})),
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
         reply("מעולה, איזו חלופה לבדוק?"),
     )
@@ -96,8 +96,8 @@ def test_full_turn_with_workbook_numbers(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
         calls(  # several tool calls in one round
             ("save_employee_details", E001_DETAILS),
-            ("find_car", {"query": "קורולה קרוס"}),
-            ("find_car", {"query": "אטו 3"}),
+            ("find_car", {"query": "קורולה קרוס", "purpose": "information"}),
+            ("find_car", {"query": "אטו 3", "purpose": "information"}),
         ),
         calls(("set_current_car", {"car_id": "CAR-09", "participation": 300})),
         calls(("compare_alternative", {"car_id": "CAR-10"})),
@@ -117,7 +117,7 @@ def test_full_turn_with_workbook_numbers(ctx: ToolContext) -> None:
 
 
 def test_provider_gets_prompt_tools_and_history(ctx: ToolContext) -> None:
-    provider = ScriptedProvider(calls(("find_car", {"query": "טוסון"})), reply("מצאתי"))
+    provider = ScriptedProvider(calls(("find_car", {"query": "טוסון", "purpose": "information"})), reply("מצאתי"))
 
     run_turn(ConversationState("c-1"), "יש לי טוסון", provider, ctx)
 
@@ -132,7 +132,7 @@ def test_provider_gets_prompt_tools_and_history(ctx: ToolContext) -> None:
 
 def test_results_answer_each_call_in_order(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "טוסון"}), ("find_car", {"query": "פרארי"})), reply("ok")
+        calls(("find_car", {"query": "טוסון", "purpose": "information"}), ("find_car", {"query": "פרארי", "purpose": "information"})), reply("ok")
     )
 
     turn = run_turn(ConversationState("c-1"), "x", provider, ctx)
@@ -170,7 +170,7 @@ def test_unknown_tool_is_reported_not_run(ctx: ToolContext) -> None:
         ("save_employee_details", {"eligible_children": 2.5}, "must be a integer"),
         ("save_employee_details", {"base_salary": -1}, "must be >= 0"),
         ("save_employee_details", {"net": 12000}, "unknown arguments ['net']"),
-        ("find_car", {}, "missing required arguments ['query']"),
+        ("find_car", {}, "missing required arguments ['query', 'purpose']"),
         ("ask_representative", {"topic": "salary", "question": "?"}, "topic must be one of"),
         ("compare_alternative", {"waiver": True, "base_salary": 99999}, "unknown arguments ['base_salary']"),
         ("set_current_car", {"waiver": "yes"}, "waiver must be a boolean"),
@@ -230,7 +230,7 @@ def test_provider_error_gives_a_fixed_reply(ctx: ToolContext) -> None:
 
 def test_ambiguous_car_needs_the_employee_to_choose(ctx: ToolContext) -> None:
     first = ScriptedProvider(
-        calls(("find_car", {"query": "קורולה"})),
+        calls(("find_car", {"query": "קורולה", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-07", "participation": 250})),  # picks a candidate itself
         reply("יש שתי קורולות, איזו?"),
     )
@@ -274,7 +274,7 @@ def test_identified_car_is_usable_at_once(ctx: ToolContext) -> None:
 
 def test_unknown_current_car_is_not_guessed_and_goes_to_the_representative(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "מאזדה CX-5 2019"})),
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "מאזדה CX-5 2019", "purpose": "information"})),
         calls(("set_current_car", {"car_id": "CAR-13", "participation": 300})),  # a guess: Mazda 3
         calls(("ask_representative", {"topic": "current_car_not_in_catalogue", "question": "מאזדה CX-5 2019, השתתפות 300"})),
         calls(("compare_alternative", {"waiver": True})),
@@ -296,7 +296,7 @@ def test_participation_question_needs_a_confirmed_car(ctx: ToolContext) -> None:
     state = e001_ready(ctx)
     provider = ScriptedProvider(
         calls(("ask_representative", {"topic": "alternative_participation", "question": "?", "car_id": "CAR-14"})),
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("ask_representative", {"topic": "alternative_participation", "question": "מה ההשתתפות?", "car_id": "car-10"})),
         reply("שאלתי את הנציג"),
     )
@@ -312,7 +312,7 @@ def test_participation_question_needs_a_confirmed_car(ctx: ToolContext) -> None:
 
 def test_undisclosed_estimate_gets_the_notice(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10"})),
         reply("הנטו יעלה ב-661 ₪."),  # does not say it is an estimate
     )
@@ -327,7 +327,7 @@ def test_undisclosed_estimate_gets_the_notice(ctx: ToolContext) -> None:
 
 def test_disclosed_estimate_gets_no_duplicate_notice(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10"})),
         reply("לפי הערכה: +661 ₪."),
     )
@@ -337,7 +337,7 @@ def test_disclosed_estimate_gets_no_duplicate_notice(ctx: ToolContext) -> None:
 
 def test_confirmed_comparison_has_no_notice(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "אטו 3"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10", "participation": 300})),
         reply("+661 ₪ בחודש."),
     )
@@ -352,7 +352,7 @@ def test_confirmed_comparison_has_no_notice(ctx: ToolContext) -> None:
 
 def test_children_are_asked_only_for_a_family_track_car(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "אטו 3"}), ("find_car", {"query": "קרניבל"})),
+        calls(("find_car", {"query": "אטו 3", "purpose": "information"}), ("find_car", {"query": "קרניבל", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-10"}), ("compare_alternative", {"car_id": "CAR-19"})),
         reply("כמה ילדים?"),
     )
@@ -380,7 +380,7 @@ def test_missing_details_are_reported_to_the_model(ctx: ToolContext) -> None:
 
 def test_ineligible_car_is_refused_by_the_engine(ctx: ToolContext) -> None:
     provider = ScriptedProvider(
-        calls(("find_car", {"query": "טסלה מודל 3"})),
+        calls(("find_car", {"query": "טסלה מודל 3", "purpose": "information"})),
         calls(("compare_alternative", {"car_id": "CAR-14"})),  # group ד; E-001 is group ג
         reply("לא זכאית"),
     )

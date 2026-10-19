@@ -87,7 +87,7 @@ def with_messages(state: ConversationState, *messages: Message) -> ConversationS
     return replace(state, messages=(*state.messages, *messages))
 
 
-# Details every comparison needs; eligible_children only for a family-track alternative.
+# Details every comparison needs; eligible_children only for a new family-track alternative.
 REQUIRED_DETAILS = (
     "occupation",
     "base_salary",
@@ -104,10 +104,12 @@ def missing_details(state: ConversationState, rules: Rules, alternative: Situati
     """EmployeeDetails fields still needed to compare with alternative (or with any alternative)."""
     details = state.details
     missing = [name for name in REQUIRED_DETAILS if getattr(details, name) is None]
+    keeps_current_car = isinstance(details.current, CompanyCar) and details.current.car_id == getattr(alternative, "car_id", None)
     if (
         isinstance(alternative, CompanyCar)
         and alternative.car_id in rules.family_track.cars
         and details.eligible_children is None
+        and not keeps_current_car  # children decide only a new family-track selection
     ):
         missing.append("eligible_children")
     return tuple(missing)

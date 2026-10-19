@@ -6,7 +6,8 @@ written here from the tools' own results instead of asking the provider to put t
   B. the comparison needs details the employee has not given yet;
   C1. the comparison is blocked until the representative answers about today's car;
   C2. a question was sent to the representative;
-  C3. a car the employee named matches several catalogue cars.
+  C3. a car the employee named matches several catalogue cars;
+  D. the alternative cannot be newly selected (a known not-eligible reason).
 
 Nothing is decided or calculated here: eligibility, missing fields, estimate status and every figure
 come from the tools (Steps 1-3); this module only formats them. Any other outcome, or an employee
@@ -35,9 +36,10 @@ from app.rules import Rules
 class RoundCall:
     """One executed tool call of a round: its name, JSON result, and the comparison if one was calculated."""
 
-    name: str
+    name: str  # the tool that ran
     content: Mapping[str, Any]
     comparison: ComparisonSummary | None = None
+    via: str | None = None  # the tool the model called, when it ran as another (find_car -> compare_alternative)
 
 
 class ReplyKind(StrEnum):
@@ -46,6 +48,7 @@ class ReplyKind(StrEnum):
     BLOCKED = "blocked"  # C1
     QUESTION = "question"  # C2
     CANDIDATES = "candidates"  # C3
+    NOT_ELIGIBLE = "not_eligible"  # D
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,7 @@ _RENDERABLE = {
     ("compare_alternative", "missing_details"),
     ("compare_alternative", "blocked_by_representative"),
     ("compare_alternative", "car_needs_choice"),
+    ("compare_alternative", "not_eligible"),
     ("ask_representative", "ok"),
 }
 
@@ -81,6 +85,8 @@ def deterministic_reply(
     """The reply for a recognised round, or None to let the provider write it."""
     if not calls or may_ask_more(user_text):
         return None
+    if any(call.via for call in calls) and not plain_request(user_text):
+        return None  # a comparison the model reached by looking a car up: render it only when nothing else is asked
     if any((call.name, _outcome(call)) not in _RENDERABLE for call in calls):
         return None
 
@@ -109,7 +115,7 @@ def deterministic_reply(
         )
         return Rendered(ReplyKind.QUESTION, _question_text(topic, question.content["already_open"])) if others_ok else None
 
-    # A, B, C1: exactly one comparison, and it is the round's last call (nothing changed the state after it).
+    # A, B, C1, D: exactly one comparison, and it is the round's last call (nothing changed the state after it).
     if len(compares) != 1 or calls[-1] is not compares[0]:
         return None
     compare, before = compares[0], calls[:-1]
@@ -123,6 +129,9 @@ def deterministic_reply(
     if outcome == "missing_details":
         if not all(call.name in ("save_employee_details", "set_current_car") for call in before):
             return None
+        if compare.content["error"].get("stage") == "eligibility":  # only the facts that decide eligibility
+            text = missing_text(_missing(compare), rules, eligibility=True)
+            return Rendered(ReplyKind.MISSING, text) if text else None
         missing = [field for call in (*before, compare) if _outcome(call) == "missing_details" for field in _missing(call)]
         if "current.participation" in missing:  # the car was named; only its participation is missing
             missing = [field for field in missing if field != "current"]
@@ -132,6 +141,11 @@ def deterministic_reply(
         if not all(_is(call, "save_employee_details", "ok") for call in before):
             return None
         return Rendered(ReplyKind.BLOCKED, BLOCKED_TEXT)
+    if outcome == "not_eligible":
+        if not all(_is(call, "save_employee_details", "ok") or _is(call, "set_current_car", "ok") for call in before):
+            return None
+        text = not_eligible_text(compare.content["error"])
+        return Rendered(ReplyKind.NOT_ELIGIBLE, text) if text else None
     return None
 
 
@@ -147,6 +161,21 @@ def may_ask_more(text: str) -> bool:
         1 for token in normalize(text) if any(form in _QUESTION_WORDS for form in (token, *prefix_stripped(token)))
     )
     return asked > 1
+
+
+# Word starts that ask for information about something ("ספר לי", "תסביר", "מידע", "פרטים") rather than
+# choosing it. Only ever used to hand a reply to the provider, never to render one; not exhaustive.
+_INFORMATION_STARTS = ("ספר", "תספר", "הסבר", "תסביר", "מידע", "פרט", "פירוט")
+
+
+def plain_request(text: str) -> bool:
+    """No question word and no request for information: the stricter check for a comparison reached via
+    find_car, where the model's stated purpose is the only sign that a comparison was wanted."""
+    for token in normalize(text):
+        forms = (token, *prefix_stripped(token))
+        if any(form in _QUESTION_WORDS or form.startswith(_INFORMATION_STARTS) for form in forms):
+            return False
+    return True
 
 
 def _outcome(call: RoundCall) -> str:
@@ -245,8 +274,11 @@ assert {fields[0] for fields, _ in _MISSING_LINES if len(fields) == 1} == {
 }
 
 
-def missing_text(missing: Sequence[str], rules: Rules) -> str | None:
-    """A question for exactly the missing fields, or None if a field is not one we know how to ask about."""
+def missing_text(missing: Sequence[str], rules: Rules, eligibility: bool = False) -> str | None:
+    """A question for exactly the missing fields, or None if a field is not one we know how to ask about.
+
+    eligibility: the fields decide whether the alternative is possible at all, so they come first.
+    """
     remaining = set(missing)
     lines = []
     for fields, text in _MISSING_LINES:
@@ -255,7 +287,12 @@ def missing_text(missing: Sequence[str], rules: Rules) -> str | None:
             remaining -= set(fields)
     if remaining or not lines:
         return None
-    header = "כדי לחשב את השינוי בנטו חסר לי עוד פרט אחד:" if len(lines) == 1 else "כדי לחשב את השינוי בנטו חסרים לי עוד כמה פרטים:"
+    if eligibility:
+        header = "כדי לבדוק אם החלופה הזו אפשרית עבורך, צריך קודם לדעת:"
+    elif len(lines) == 1:
+        header = "כדי לחשב את השינוי בנטו חסר לי עוד פרט אחד:"
+    else:
+        header = "כדי לחשב את השינוי בנטו חסרים לי עוד כמה פרטים:"
     return "\n".join([header, *(f"• {line}" for line in lines)])
 
 
@@ -263,6 +300,40 @@ def _line(fields: tuple[str, ...], text: str, rules: Rules) -> str:
     if fields == ("eligible_children",):
         return f"מספר הילדים שלך עד גיל {rules.family_track.child_max_age} (נדרש לרכב מהמסלול המשפחתי)"
     return text
+
+
+# --- D. Not eligible ---------------------------------------------------------------------------
+
+# Hebrew for rules.json chooseFrom values; a value without wording is left to the provider.
+_CHOOSE_FROM = {"own_group_or_lower": "רכב מהקבוצה שלך או מקבוצה נמוכה ממנה"}
+_ANOTHER = "אפשר לבדוק חלופה אחרת."
+
+
+def not_eligible_text(error: Mapping[str, Any]) -> str | None:
+    """The refusal in Hebrew from the tool's facts (catalogue, CSV, rules.json), or None if not recognised.
+
+    Eligibility concerns a NEW selection, so the wording restricts choosing the alternative now and
+    never says anything about a car the employee already has.
+    """
+    facts = error.get("facts") or {}
+    reason = error.get("reason")
+    try:
+        if reason == "waiver_not_allowed":
+            return f"לפי טבלת התפקידים, בתפקיד {facts['occupation']} אי אפשר לבחור כעת בוויתור על הרכב. {_ANOTHER}"
+        if reason == "group_too_high":
+            return (
+                f"אי אפשר לבחור ב-{facts['commercial_name']} כבחירה חדשה: הרכב בקבוצה {facts['car_group']}, "
+                f"והתפקיד שלך בקבוצה {facts['employee_group']}, שמאפשרת לבחור {_CHOOSE_FROM[facts['choose_from']]}. {_ANOTHER}"
+            )
+        if reason == "not_enough_children" and facts["eligible_children"] is not None:
+            return (
+                f"אי אפשר לבחור ב-{facts['commercial_name']} כבחירה חדשה במסלול המשפחתי: המסלול מיועד למי שיש לו "
+                f"לפחות {facts['min_children']} ילדים עד גיל {facts['child_max_age']}, ולפי מה שמסרת יש לך "
+                f"{facts['eligible_children']}. {_ANOTHER}"
+            )
+    except KeyError:
+        return None
+    return None
 
 
 # --- C. Representative and car choice ---------------------------------------------------------
