@@ -77,6 +77,23 @@ def occupation_grounded(occupation: str, texts: Sequence[str]) -> bool:
     return all(any(form in written for form in _forms(word)) for word in occupation.split())
 
 
+def matching_occupations(value: str, names: Iterable[str]) -> tuple[str, ...]:
+    """Workbook occupation names whose words are exactly the words of value, in either gender form.
+
+    "מנהלת מוצר" and "מנהל המוצר" match only "מנהל/ת מוצר"; a missing or extra word ("מנהלת",
+    "מנהלת מוצר בכירה") matches nothing. Exact word equality, no similarity.
+    """
+    value_words = [{token, *prefix_stripped(token)} for token in normalize(value)]
+    matches = []
+    for name in names:
+        name_words = [set(_forms(word)) for word in name.split()]
+        if len(name_words) == len(value_words) and all(
+            any(variants & forms for variants in value_words) for forms in name_words
+        ) and all(any(variants & forms for forms in name_words) for variants in value_words):
+            matches.append(name)
+    return tuple(matches)
+
+
 def waiver_grounded(texts: Sequence[str]) -> bool:
     return any(token.startswith(_WAIVER_STARTS) for text in texts for token in _tokens(text))
 

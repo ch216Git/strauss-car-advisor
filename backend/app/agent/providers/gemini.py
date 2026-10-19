@@ -10,11 +10,12 @@ reprs or conversation state.
 
 import base64
 import os
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.llm import Message, ProviderError, ProviderErrorKind, Role, ToolCall, ToolSpec
+from app.agent.llm import Message, ProviderError, ProviderErrorKind, ProviderFailure, Role, ToolCall, ToolSpec
 
 PROVIDER = "gemini"
 API_KEY_VARIABLE = "GEMINI_API_KEY"
@@ -24,6 +25,9 @@ DEFAULT_MODEL = "gemini-flash-latest"
 # Per request. Without it google-genai builds its HTTP client with timeout=None (wait forever) and,
 # with no retry_options, makes a single attempt - so this bounds every generate_content call.
 DEFAULT_TIMEOUT_SECONDS = 60.0
+# Retries of one generate_content request after a retryable failure (5xx, timeout, network; not 429):
+# 3 attempts in all, waiting 1s then 2s. Each attempt is bounded by the timeout above.
+RETRY_DELAYS_SECONDS = (1.0, 2.0)
 LOCAL_CALL_ID_PREFIX = "local-"  # call IDs we made up because Gemini sent none; not sent back
 
 
@@ -44,13 +48,29 @@ class GeminiSettings:
 
 
 class GeminiProvider:
-    """LLMProvider for Gemini. Pass client= to inject a fake in tests (no network, no quota)."""
+    """LLMProvider for Gemini. Pass client= (and sleep=) to inject fakes in tests (no network, no quota).
+
+    events, if set, receives value-free retry lines: attempt numbers, failure category, HTTP status,
+    retryable, and the wait - never requests, messages, keys or SDK text.
+    """
 
     name = PROVIDER
 
-    def __init__(self, settings: GeminiSettings, client: Any = None) -> None:
+    def __init__(
+        self,
+        settings: GeminiSettings,
+        client: Any = None,
+        *,
+        sleep: Callable[[float], None] | None = None,
+        events: Callable[[str], None] | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client
+        self._sleep = sleep
+        self._events = events
+
+    def set_events(self, events: Callable[[str], None] | None) -> None:
+        self._events = events
 
     def __repr__(self) -> str:
         return f"GeminiProvider(model={self._settings.model!r}, timeout_seconds={self._settings.timeout_seconds})"
@@ -64,16 +84,37 @@ class GeminiProvider:
         return self._settings.timeout_seconds
 
     def complete(self, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Message:
-        contents, config = to_gemini_request(system, messages, tools)
-        try:
-            response = self._get_client().models.generate_content(
-                model=self._settings.model, contents=contents, config=config
+        """One generate_content request, retried on retryable failures with the very same request."""
+        contents, config = to_gemini_request(system, messages, tools)  # built once, sent unchanged each attempt
+        attempts = len(RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                self._emit(f"provider attempt {attempt} started")
+            try:
+                response = self._get_client().models.generate_content(
+                    model=self._settings.model, contents=contents, config=config
+                )
+            except ProviderError:
+                raise  # our own configuration errors: never retried
+            except Exception as e:  # SDK and transport errors; their text is not reused (see ProviderError)
+                error = _request_error(e)
+            else:
+                return from_gemini_response(response)
+
+            self._emit(
+                f"provider attempt {attempt} failed category={error.category.value} "
+                f"status={error.status_code or '-'} retryable={'yes' if error.retryable else 'no'}"
             )
-        except ProviderError:
-            raise
-        except Exception as e:  # SDK and transport errors; their text is not reused (see ProviderError)
-            raise _request_error(e) from None
-        return from_gemini_response(response)
+            if not error.retryable or attempt == attempts:
+                raise error from None
+            delay = RETRY_DELAYS_SECONDS[attempt - 1]
+            self._emit(f"provider retrying in {delay:.1f}s")
+            (self._sleep or _sleep)(delay)
+        raise AssertionError("unreachable")
+
+    def _emit(self, line: str) -> None:
+        if self._events:
+            self._events(line)
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -187,6 +228,10 @@ def _enum_name(value: Any) -> str:
 
 # --- Client and errors ------------------------------------------------------------
 
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def _timeout(environ: Mapping[str, str]) -> float:
     raw = environ.get(TIMEOUT_VARIABLE, "").strip()
     if not raw:
@@ -216,24 +261,55 @@ def _create_client(api_key: str, timeout_seconds: float) -> Any:
         ) from None
 
 
-# Transport failures from the SDK's HTTP client, recognized by name so httpx need not be imported.
-_TRANSPORT_ERRORS = (
-    "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException", "NetworkError",
-)
+# Transport failures raised by the SDK's HTTP client (httpx) before any HTTP status exists, recognized
+# by class names in the exception's hierarchy so httpx need not be imported. Timeouts are checked first:
+# httpx.TimeoutException is itself a TransportError.
+_TIMEOUT_CLASSES = {"TimeoutException", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutError"}
+_NETWORK_CLASSES = {"TransportError", "NetworkError", "ConnectError", "ReadError", "WriteError", "CloseError",
+                    "ProtocolError", "RemoteProtocolError", "LocalProtocolError", "ProxyError", "ConnectionError"}
+
+_KIND = {
+    ProviderFailure.TIMEOUT: ProviderErrorKind.UNAVAILABLE,
+    ProviderFailure.SERVER_ERROR: ProviderErrorKind.UNAVAILABLE,
+    ProviderFailure.NETWORK_ERROR: ProviderErrorKind.UNAVAILABLE,
+    ProviderFailure.RATE_LIMITED: ProviderErrorKind.RATE_LIMITED,
+    ProviderFailure.AUTH_ERROR: ProviderErrorKind.AUTHENTICATION,
+    ProviderFailure.INVALID_REQUEST: ProviderErrorKind.REQUEST_FAILED,
+    ProviderFailure.UNKNOWN: ProviderErrorKind.REQUEST_FAILED,
+}
+
+
+def classify_failure(error: Exception) -> tuple[ProviderFailure, int | None]:
+    """(category, HTTP status) for an SDK or transport exception. Its message is never read.
+
+    google-genai raises errors.ClientError (4xx) / ServerError (5xx), both APIError with the HTTP
+    status in .code; transport problems arrive as httpx exceptions without a status.
+    """
+    code = getattr(error, "code", None)
+    status = code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599 else None
+    if status is not None:
+        if status in (401, 403):
+            return ProviderFailure.AUTH_ERROR, status
+        if status == 429:
+            return ProviderFailure.RATE_LIMITED, status
+        if status in (408, 504):
+            return ProviderFailure.TIMEOUT, status
+        if status >= 500:
+            return ProviderFailure.SERVER_ERROR, status
+        if status >= 400:
+            return ProviderFailure.INVALID_REQUEST, status
+        return ProviderFailure.UNKNOWN, status
+    names = {cls.__name__ for cls in type(error).__mro__}
+    if names & _TIMEOUT_CLASSES:
+        return ProviderFailure.TIMEOUT, None
+    if names & _NETWORK_CLASSES:
+        return ProviderFailure.NETWORK_ERROR, None
+    return ProviderFailure.UNKNOWN, None
 
 
 def _request_error(error: Exception) -> ProviderError:
-    """Classify by HTTP status (google.genai.errors.APIError.code); the SDK's own text is not reused."""
-    code = getattr(error, "code", None)
-    if code in (401, 403):
-        kind = ProviderErrorKind.AUTHENTICATION
-    elif code == 429:
-        kind = ProviderErrorKind.RATE_LIMITED
-    elif code == 408 or (isinstance(code, int) and code >= 500):  # 408/504: request timed out
-        kind = ProviderErrorKind.UNAVAILABLE
-    elif isinstance(error, (ConnectionError, TimeoutError)) or type(error).__name__.endswith(_TRANSPORT_ERRORS):
-        kind = ProviderErrorKind.UNAVAILABLE
-    else:
-        kind = ProviderErrorKind.REQUEST_FAILED
-    status = f"HTTP {code}" if isinstance(code, int) else type(error).__name__
-    return ProviderError(PROVIDER, kind, f"generate_content failed ({status})")
+    category, status = classify_failure(error)
+    detail = f"{category.value}, HTTP {status}" if status is not None else category.value
+    return ProviderError(
+        PROVIDER, _KIND[category], f"generate_content failed ({detail})", category=category, status_code=status
+    )

@@ -17,6 +17,7 @@ from typing import Any
 
 from app.agent.grounding import employee_texts, number_grounded, occupation_grounded, waiver_grounded
 from app.agent.llm import ToolCall, ToolSpec
+from app.agent.render import electric_benefit
 from app.agent.state import ConversationState
 from app.agent.tools import (
     Alternatives,
@@ -40,6 +41,7 @@ from app.salary import NetBreakdown
 # --- Tool specs ----------------------------------------------------------------------
 
 _NUMBER = {"type": "number", "minimum": 0}
+_CAR_WORDS = {"type": "string", "description": "One car exactly as the employee wrote it, Hebrew or English"}
 
 SPECS = (
     ToolSpec(
@@ -49,7 +51,7 @@ SPECS = (
         {
             "type": "object",
             "properties": {
-                "occupation": {"type": "string", "description": "Exact occupation name from the occupations list"},
+                "occupation": {"type": "string", "description": "The occupation as the employee wrote it"},
                 "base_salary": _NUMBER,
                 "commissions": {**_NUMBER, "description": "0 if the employee said there are none"},
                 "bonus": {**_NUMBER, "description": "Monthly bonus; 0 if none"},
@@ -71,10 +73,13 @@ SPECS = (
     ),
     ToolSpec(
         "set_current_car",
-        "Record today's situation: car_id with the participation the employee stated, or waiver=true.",
+        "Record today's situation: the car (the employee's own words, or a car_id) with the participation the "
+        "employee stated, or waiver=true. An unclear car is not set: the candidates come back to ask about.",
         {
             "type": "object",
-            "properties": {"car_id": {"type": "string"}, "participation": _NUMBER, "waiver": {"type": "boolean"}},
+            "properties": {
+                "car": _CAR_WORDS, "car_id": {"type": "string"}, "participation": _NUMBER, "waiver": {"type": "boolean"},
+            },
         },
     ),
     ToolSpec(
@@ -84,11 +89,14 @@ SPECS = (
     ),
     ToolSpec(
         "compare_alternative",
-        "Calculate net pay today vs the alternative (car_id or waiver=true). Pass participation only if the "
-        "employee or the representative stated it; otherwise the result is an estimate.",
+        "Calculate net pay today vs the alternative: the car (the employee's own words, or a car_id) or "
+        "waiver=true. Pass participation only if the employee or the representative stated it; otherwise the "
+        "result is an estimate. An unclear car is not compared: the candidates come back to ask about.",
         {
             "type": "object",
-            "properties": {"car_id": {"type": "string"}, "waiver": {"type": "boolean"}, "participation": _NUMBER},
+            "properties": {
+                "car": _CAR_WORDS, "car_id": {"type": "string"}, "waiver": {"type": "boolean"}, "participation": _NUMBER,
+            },
         },
     ),
     ToolSpec(
@@ -138,6 +146,12 @@ def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execu
     except ArgumentError as e:
         return Execution(state, _failure("invalid_arguments", str(e)))
 
+    if "car" in arguments:
+        resolved = _resolve_car_words(call.name, arguments, state, ctx)
+        if isinstance(resolved, Execution):
+            return resolved
+        state, arguments = resolved
+
     if call.name in _GUARDED and arguments.get("car_id") is not None:
         car_id = _catalogue_id(arguments["car_id"], ctx)
         if car_id not in state.usable_car_ids:
@@ -167,6 +181,36 @@ def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execu
         return Execution(new_state, _error_content(outcome.result, ctx.rules))
     comparison = outcome.result if isinstance(outcome.result, ComparisonSummary) else None
     return Execution(new_state, {"ok": True, **to_json(outcome.result, ctx.rules)}, comparison)
+
+
+def _resolve_car_words(
+    tool: str, arguments: dict[str, Any], state: ConversationState, ctx: ToolContext
+) -> tuple[ConversationState, dict[str, Any]] | Execution:
+    """car (employee's words) -> car_id, through find_car and the same guard as a find_car result.
+
+    Only an identified car that the employee's own messages name is used; candidates are recorded
+    as offered (so the employee's next message can choose) and returned instead of being used.
+    """
+    if "car_id" in arguments or arguments.get("waiver"):
+        return Execution(state, _failure("invalid_arguments", "give one of car, car_id or waiver"))
+    outcome = _RUN["find_car"](state, ctx, query=arguments["car"])
+    state = _track_cars(outcome.state, outcome.result, ctx)
+    if isinstance(outcome.result, ToolError):
+        return Execution(state, _error_content(outcome.result, ctx.rules))
+    matches = outcome.result
+    if matches.status == MatchStatus.IDENTIFIED and matches.cars[0].car_id in state.usable_car_ids:
+        rest = {name: value for name, value in arguments.items() if name != "car"}
+        return state, {**rest, "car_id": matches.cars[0].car_id}
+
+    if matches.status == MatchStatus.CANDIDATES:
+        code, detail = "car_needs_choice", "several cars match; show these to the employee and ask which one"
+    elif matches.status == MatchStatus.NOT_FOUND:
+        code, detail = "car_not_found", "not in the catalogue; it cannot be calculated - offer the representative"
+    else:
+        code, detail = "car_not_confirmed", "the employee's own words do not name this car; ask the employee"
+    content = _failure(code, f"{tool} was not run: {detail}")
+    content["error"]["matches"] = to_json(matches, ctx.rules)
+    return Execution(state, content)
 
 
 def start_turn(state: ConversationState, user_text: str, ctx: ToolContext) -> ConversationState:
@@ -284,7 +328,7 @@ def _error_content(error: ToolError, rules: Rules) -> dict[str, Any]:
 CHANGE_LABELS = {
     "pensionable_income": "הכנסה פנסיונית (בסיס, עמלות ובונוס)",
     "maintenance": "אחזקת רכב (חייבת במס)",
-    "electric_gross": "החזר חשמל מגולם, ברוטו (העובד מקבל electric_net_bonus נטו)",
+    "electric_gross": "החזר חשמל (מגולם): הרכיב בברוטו; העובד מקבל electric_net_bonus נטו",
     "gross_income": "סך הברוטו המשולם",
     "use_value": "שווי שימוש",
     "taxable_income": "הכנסה חייבת במס",
@@ -372,6 +416,7 @@ def _details_json(details: SituationDetails, rules: Rules) -> dict[str, Any]:
     )
     if details.electric:
         out["electric_net_bonus"] = rules.electric.net_bonus  # what the employee receives net (rules.json)
+        out["electric_benefit"] = electric_benefit(rules)  # the official wording, to quote as written
     if details.family_track:
         out["family_track_employee_share"] = display_shekels(details.family_track.employee_share)
     return out

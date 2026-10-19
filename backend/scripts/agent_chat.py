@@ -44,7 +44,12 @@ def chat(
             break
         if not text:
             continue
-        live = (lambda line: debug(f"[debug] {line}")) if debug else None
+        live = None
+        if debug:
+            log = _RoundLog(debug)
+            live = log.agent
+            if hasattr(provider, "set_events"):
+                provider.set_events(log.provider)  # retry activity, prefixed with the current round
         try:
             turn = run_turn(state, text, provider, ctx, events=live)
         except Exception as e:  # never show a traceback: exception text may contain employee values
@@ -57,6 +62,22 @@ def chat(
         state = turn.state
         write(turn.reply)
     return state
+
+
+class _RoundLog:
+    """Prints agent events as they come, and provider events prefixed with the agent's current round."""
+
+    def __init__(self, write: Callable[[str], None]) -> None:
+        self._write = write
+        self._round = ""
+
+    def agent(self, line: str) -> None:
+        if line.startswith("round "):
+            self._round = line.split(":", 1)[0]
+        self._write(f"[debug] {line}")
+
+    def provider(self, line: str) -> None:
+        self._write(f"[debug] {self._round}: {line}" if self._round else f"[debug] {line}")
 
 
 def turn_summary(turn: TurnResult, ctx: ToolContext) -> str:

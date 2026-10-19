@@ -24,6 +24,7 @@ from app.agent.state import (
     missing_details,
     open_questions,
 )
+from app.agent.grounding import matching_occupations
 from app.car_search import CarSearch, MatchStatus, build_car_search, normalize
 from app.catalog import Catalog, CatalogCar, load_catalog, lookup_vehicle
 from app.comparison import (
@@ -423,12 +424,16 @@ def _with_details(state: ConversationState, details: EmployeeDetails) -> Convers
 
 def _convert_detail(argument: str, value: object, ctx: ToolContext) -> object:
     if argument == "occupation":
-        if not isinstance(value, str) or value not in ctx.catalog.occupations:
-            return ToolError(
-                ToolErrorCode.UNKNOWN_OCCUPATION,
-                f"{value!r} is not in the occupations table; known: {list(ctx.catalog.occupations)}",
-            )
-        return value
+        if isinstance(value, str) and value in ctx.catalog.occupations:
+            return value
+        # The employee's wording ("מנהלת מוצר") -> the one workbook name with the same words ("מנהל/ת מוצר").
+        matches = matching_occupations(value, ctx.catalog.occupations) if isinstance(value, str) else ()
+        if len(matches) == 1:
+            return matches[0]
+        return ToolError(
+            ToolErrorCode.UNKNOWN_OCCUPATION,
+            f"{value!r} is not in the occupations table; known: {list(ctx.catalog.occupations)}",
+        )
     if argument == "eligible_children":
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return ToolError(ToolErrorCode.INVALID_ARGUMENT, f"eligible_children must be a whole number >= 0: {value!r}")

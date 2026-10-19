@@ -5,7 +5,10 @@ The LLM only converses and chooses tools. Every number and decision comes from t
 - a hard round limit;
 - every number in the final reply must appear in a tool result or the employee's own messages;
   otherwise the reply is replaced by a deterministic one built from the engine's result;
-- an estimated comparison is always disclosed (a fixed notice is added if the reply does not say so).
+- an estimated comparison is always disclosed (a fixed notice is added if the reply does not say so);
+- after the first tool round, a recognised outcome (app.agent.render) is put into words by Python,
+  saving the provider call that would only have verbalised it. The rendered reply must pass the same
+  numbers check; if it does not, or the round is not recognised, the provider writes the reply.
 """
 
 import time
@@ -16,6 +19,7 @@ from enum import StrEnum
 from app.agent.llm import LLMProvider, Message, ProviderError, ToolResult
 from app.agent.output_check import discloses_estimate, unsupported_numbers
 from app.agent.prompt import SYSTEM_PROMPT
+from app.agent.render import ReplyKind, RoundCall, deterministic_reply
 from app.agent.state import ComparisonStatus, ConversationState, with_messages
 from app.agent.tool_registry import SPECS, execute, start_turn
 from app.agent.tools import ComparisonSummary, ToolContext
@@ -33,6 +37,7 @@ ESTIMATE_NOTICE = (
 
 class TurnStop(StrEnum):
     REPLIED = "replied"
+    RENDERED = "rendered"  # written by Python from the first tool round's results (app.agent.render)
     REPLACED_UNSUPPORTED_NUMBERS = "replaced_unsupported_numbers"  # the model's reply had numbers not from tools
     MAX_ROUNDS = "max_rounds"
     PROVIDER_ERROR = "provider_error"
@@ -83,7 +88,10 @@ def run_turn(
             reply = provider.complete(SYSTEM_PROMPT, state.messages, SPECS)
         except ProviderError as e:
             timings.append(RoundTiming(clock() - call_started, None))
-            emit(f"round {number}: provider error ({e.kind.value}) after {timings[-1].provider_seconds:.2f}s")
+            emit(
+                f"round {number}: provider error category={e.category.value} status={e.status_code or '-'} "
+                f"retryable={'yes' if e.retryable else 'no'} after {timings[-1].provider_seconds:.2f}s"
+            )
             return finish(PROVIDER_ERROR_REPLY, TurnStop.PROVIDER_ERROR, rounds)
         provider_seconds = clock() - call_started
         returned = f"{len(reply.tool_calls)} tool calls" if reply.tool_calls else "final reply"
@@ -101,10 +109,12 @@ def run_turn(
         tools_started = clock()
         state = with_messages(state, reply)
         results = []
+        round_calls = []
         for call in reply.tool_calls:
             execution = execute(call, state, ctx)
             state = execution.state
             results.append(ToolResult(call.call_id, call.name, execution.content))
+            round_calls.append(RoundCall(call.name, execution.content, execution.comparison))
             if execution.comparison is not None:
                 comparison = execution.comparison
         state = with_messages(state, Message.tool(results))
@@ -112,7 +122,30 @@ def run_turn(
         outcomes = ", ".join(f"{r.name}={_outcome(r.content)}" for r in results)
         emit(f"round {number}: tools {timings[-1].tool_seconds:.2f}s: {outcomes}")
 
+        if rounds == 0:
+            rendered = _rendered_reply(user_text, round_calls, state, ctx, emit, number)
+            if rendered is not None:
+                return finish(rendered, TurnStop.RENDERED, rounds + 1)
+
     return finish(MAX_ROUNDS_REPLY, TurnStop.MAX_ROUNDS, MAX_TOOL_ROUNDS)
+
+
+def _rendered_reply(
+    user_text: str, round_calls: list[RoundCall], state: ConversationState, ctx: ToolContext,
+    emit: Callable[[str], None], number: int,
+) -> str | None:
+    """Python's reply for a recognised first round, or None to ask the provider as before."""
+    rendered = deterministic_reply(user_text, round_calls, state, ctx.rules)
+    if rendered is None:
+        return None
+    estimate = rendered.kind == ReplyKind.COMPARISON and any(
+        c.comparison is not None and c.comparison.status == ComparisonStatus.ESTIMATE for c in round_calls
+    )
+    if unsupported_numbers(rendered.text, state) or (estimate and not discloses_estimate(rendered.text)):
+        emit(f"round {number}: deterministic reply not used ({rendered.kind.value}); asking the provider")
+        return None
+    emit(f"round {number}: deterministic reply ({rendered.kind.value})")
+    return rendered.text
 
 
 def _outcome(content) -> str:

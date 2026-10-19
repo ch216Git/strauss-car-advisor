@@ -91,20 +91,57 @@ class ProviderErrorKind(StrEnum):
     REQUEST_FAILED = "request_failed"
 
 
-_RETRYABLE = {ProviderErrorKind.RATE_LIMITED, ProviderErrorKind.UNAVAILABLE}
+# Only transient service/network failures. A rate-limited (429) request is not retried: retrying
+# at once adds requests without restoring quota.
+_RETRYABLE = {ProviderErrorKind.UNAVAILABLE}
+
+
+class ProviderFailure(StrEnum):
+    """What went wrong, for diagnostics. kind (above) decides behaviour; this explains it."""
+
+    TIMEOUT = "timeout"  # the request took too long (client timeout, HTTP 408/504)
+    RATE_LIMITED = "rate_limited"  # HTTP 429: quota or rate limit
+    SERVER_ERROR = "server_error"  # HTTP 5xx, e.g. 503 when the model is overloaded
+    NETWORK_ERROR = "network_error"  # connection failed or dropped before an HTTP status
+    AUTH_ERROR = "auth_error"  # HTTP 401/403
+    INVALID_REQUEST = "invalid_request"  # other HTTP 4xx: the request itself was rejected
+    CONFIGURATION = "configuration"  # our side: missing key, SDK not installed
+    INVALID_RESPONSE = "invalid_response"  # a reply arrived but was blocked, empty or unreadable
+    UNKNOWN = "unknown"
+
+
+_DEFAULT_FAILURE = {
+    ProviderErrorKind.CONFIGURATION: ProviderFailure.CONFIGURATION,
+    ProviderErrorKind.AUTHENTICATION: ProviderFailure.AUTH_ERROR,
+    ProviderErrorKind.RATE_LIMITED: ProviderFailure.RATE_LIMITED,
+    ProviderErrorKind.UNAVAILABLE: ProviderFailure.SERVER_ERROR,
+    ProviderErrorKind.INVALID_RESPONSE: ProviderFailure.INVALID_RESPONSE,
+    ProviderErrorKind.REQUEST_FAILED: ProviderFailure.UNKNOWN,
+}
 
 
 class ProviderError(Exception):
     """A provider failure, described without secrets or provider-specific types.
 
     Adapters must build the message themselves: never from raw SDK exception text, which may echo
-    request details.
+    request details. category and status_code (an HTTP status, when the provider gave one) are safe
+    to show in diagnostics.
     """
 
-    def __init__(self, provider: str, kind: ProviderErrorKind, message: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        kind: ProviderErrorKind,
+        message: str,
+        *,
+        category: ProviderFailure | None = None,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(f"{provider}: {kind.value}: {message}")
         self.provider = provider
         self.kind = kind
+        self.category = category or _DEFAULT_FAILURE[kind]
+        self.status_code = status_code if isinstance(status_code, int) and 100 <= status_code <= 599 else None
 
     @property
     def retryable(self) -> bool:

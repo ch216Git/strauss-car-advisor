@@ -177,10 +177,14 @@ def test_unsupported_numbers_lists_only_the_unsupported(e001: ConversationState)
 
 
 def test_comparison_reply_for_a_waiver(ctx: ToolContext, e001: ConversationState) -> None:
-    provider = ScriptedProvider(calls(("compare_alternative", {"waiver": True})), Message.assistant("x 123456"))
+    # Comparing in round 2 keeps the provider's reply (rendering is for round 1 only), so the replacement runs.
+    provider = ScriptedProvider(
+        calls(("list_alternatives", {})), calls(("compare_alternative", {"waiver": True})), Message.assistant("x 123456")
+    )
 
     turn = run_turn(e001, "ואם אוותר על הרכב?", provider, ctx)
 
+    assert turn.stop == TurnStop.REPLACED_UNSUPPORTED_NUMBERS
     assert turn.reply.splitlines()[1].startswith("נטו בחלופה (ויתור על הרכב):")
 
 
@@ -242,17 +246,32 @@ def test_started_event_is_emitted_before_each_provider_call(ctx: ToolContext) ->
     assert events[4].endswith("(final reply)")
 
 
-def test_provider_error_event_shows_only_the_kind(ctx: ToolContext) -> None:
-    from app.agent.llm import ProviderError, ProviderErrorKind
+@pytest.mark.parametrize(
+    "category, status, kind, expected",
+    [
+        ("server_error", 503, "unavailable", "category=server_error status=503 retryable=yes"),
+        ("rate_limited", 429, "rate_limited", "category=rate_limited status=429 retryable=no"),
+        ("timeout", None, "unavailable", "category=timeout status=- retryable=yes"),
+        ("auth_error", 403, "authentication", "category=auth_error status=403 retryable=no"),
+        ("invalid_request", 400, "request_failed", "category=invalid_request status=400 retryable=no"),
+    ],
+)
+def test_provider_error_event_shows_only_safe_diagnostics(ctx: ToolContext, category, status, kind, expected) -> None:
+    from app.agent.llm import ProviderError, ProviderErrorKind, ProviderFailure
 
     events: list[str] = []
-    error = ProviderError("gemini", ProviderErrorKind.UNAVAILABLE, "generate_content failed (ReadTimeout)")
+    error = ProviderError(
+        "gemini", ProviderErrorKind(kind), "raw detail: request body and key=AIza-SECRET",
+        category=ProviderFailure(category), status_code=status,
+    )
 
     turn = run_turn(ConversationState("c-1"), "שלום", RecordingProvider(events, error), ctx, events=events.append)
 
     assert turn.stop == TurnStop.PROVIDER_ERROR
     assert events[0] == "round 1: provider call started"
-    assert events[1].startswith("round 1: provider error (unavailable) after ") and "ReadTimeout" not in events[1]
+    assert events[1].startswith(f"round 1: provider error {expected} after ")
+    assert "raw detail" not in events[1] and "AIza" not in events[1]
+    assert turn.reply == "מצטער/ת, יש תקלה זמנית בחיבור ליועץ. אפשר לנסות שוב בעוד רגע."  # generic for the employee
 
 
 def test_events_carry_no_employee_values(ctx: ToolContext) -> None:

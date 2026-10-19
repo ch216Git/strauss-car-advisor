@@ -98,3 +98,25 @@ def test_unexpected_error_shows_no_details() -> None:
     assert debugged[:2] == ["[debug] round 1: provider call started", "[debug] internal error: RuntimeError"]
     assert all("18500" not in line for line in written + debugged)
     assert [m.text for m in state.messages] == ["שלום", "שוב שלום"]  # the failed turn left no trace
+
+
+def test_provider_retry_events_are_prefixed_with_the_round() -> None:
+    class RetryingProvider(ScriptedProvider):
+        def set_events(self, events) -> None:
+            self.events = events
+
+        def complete(self, system, messages, tools) -> Message:
+            self.events("provider attempt 1 failed category=server_error status=503 retryable=yes")
+            self.events("provider retrying in 1.0s")
+            self.events("provider attempt 2 started")
+            return super().complete(system, messages, tools)
+
+    _, written, debugged = run_chat(RetryingProvider(Message.assistant("שלום")), ["שלום"], debug=True)
+
+    assert written == ["שלום"]
+    assert debugged[:4] == [
+        "[debug] round 1: provider call started",
+        "[debug] round 1: provider attempt 1 failed category=server_error status=503 retryable=yes",
+        "[debug] round 1: provider retrying in 1.0s",
+        "[debug] round 1: provider attempt 2 started",
+    ]

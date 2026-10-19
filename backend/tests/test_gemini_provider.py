@@ -371,3 +371,250 @@ def test_repr_shows_timeout_but_not_key() -> None:
     text = repr(GeminiProvider(GeminiSettings(api_key=FAKE_KEY, timeout_seconds=30), client=fake_client()))
 
     assert "timeout_seconds=30" in text and FAKE_KEY not in text
+
+
+# --- Failure classification (google-genai ClientError/ServerError and httpx shapes) -------------
+
+from app.agent.llm import ProviderFailure  # noqa: E402
+from app.agent.providers.gemini import classify_failure  # noqa: E402
+
+
+class FakeTransportError(Exception):  # httpx class tree, by name: classification never imports httpx
+    pass
+
+
+FakeTransportError.__name__ = "TransportError"
+FakeTimeoutException = type("TimeoutException", (FakeTransportError,), {})
+FakeNetworkError = type("NetworkError", (FakeTransportError,), {})
+FakeProtocolError = type("ProtocolError", (FakeTransportError,), {})
+
+
+def transport(cls_name: str, base: type) -> Exception:
+    return type(cls_name, (base,), {})(f"connection to https://example.invalid?key={FAKE_KEY} failed")
+
+
+@pytest.mark.parametrize(
+    "error, category, status, kind, retryable",
+    [
+        # HTTP statuses from google.genai.errors.ClientError / ServerError (.code)
+        (FakeAPIError(400), ProviderFailure.INVALID_REQUEST, 400, ProviderErrorKind.REQUEST_FAILED, False),
+        (FakeAPIError(404), ProviderFailure.INVALID_REQUEST, 404, ProviderErrorKind.REQUEST_FAILED, False),
+        (FakeAPIError(401), ProviderFailure.AUTH_ERROR, 401, ProviderErrorKind.AUTHENTICATION, False),
+        (FakeAPIError(403), ProviderFailure.AUTH_ERROR, 403, ProviderErrorKind.AUTHENTICATION, False),
+        (FakeAPIError(429), ProviderFailure.RATE_LIMITED, 429, ProviderErrorKind.RATE_LIMITED, False),
+        (FakeAPIError(408), ProviderFailure.TIMEOUT, 408, ProviderErrorKind.UNAVAILABLE, True),
+        (FakeAPIError(504), ProviderFailure.TIMEOUT, 504, ProviderErrorKind.UNAVAILABLE, True),
+        (FakeAPIError(500), ProviderFailure.SERVER_ERROR, 500, ProviderErrorKind.UNAVAILABLE, True),
+        (FakeAPIError(502), ProviderFailure.SERVER_ERROR, 502, ProviderErrorKind.UNAVAILABLE, True),
+        (FakeAPIError(503), ProviderFailure.SERVER_ERROR, 503, ProviderErrorKind.UNAVAILABLE, True),
+        # Transport problems (no HTTP status)
+        (transport("ReadTimeout", FakeTimeoutException), ProviderFailure.TIMEOUT, None, ProviderErrorKind.UNAVAILABLE, True),
+        (transport("ConnectTimeout", FakeTimeoutException), ProviderFailure.TIMEOUT, None, ProviderErrorKind.UNAVAILABLE, True),
+        (transport("ConnectError", FakeNetworkError), ProviderFailure.NETWORK_ERROR, None, ProviderErrorKind.UNAVAILABLE, True),
+        (transport("ReadError", FakeNetworkError), ProviderFailure.NETWORK_ERROR, None, ProviderErrorKind.UNAVAILABLE, True),
+        (transport("RemoteProtocolError", FakeProtocolError), ProviderFailure.NETWORK_ERROR, None, ProviderErrorKind.UNAVAILABLE, True),
+        (TimeoutError(f"key={FAKE_KEY}"), ProviderFailure.TIMEOUT, None, ProviderErrorKind.UNAVAILABLE, True),
+        (ConnectionResetError(f"key={FAKE_KEY}"), ProviderFailure.NETWORK_ERROR, None, ProviderErrorKind.UNAVAILABLE, True),
+        # Anything else
+        (RuntimeError(f"key={FAKE_KEY}"), ProviderFailure.UNKNOWN, None, ProviderErrorKind.REQUEST_FAILED, False),
+    ],
+)
+def test_failures_are_classified_deterministically(error, category, status, kind, retryable) -> None:
+    provider = GeminiProvider(SETTINGS, client=fake_client(error=error))
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("", [Message.user("x")], [])
+
+    raised = info.value
+    assert (raised.category, raised.status_code, raised.kind, raised.retryable) == (category, status, kind, retryable)
+    assert FAKE_KEY not in str(raised) and "example.invalid" not in str(raised) and "ERROR." not in str(raised)
+    assert raised.__cause__ is None
+
+
+@pytest.mark.parametrize("code", ["503", 999, 42, True, None])
+def test_only_real_http_statuses_are_reported(code) -> None:
+    error = Exception("x")
+    error.code = code
+
+    category, status = classify_failure(error)
+
+    assert status is None and category == ProviderFailure.UNKNOWN
+
+
+def test_adapter_errors_get_a_category_from_their_kind() -> None:
+    assert ProviderError("gemini", ProviderErrorKind.CONFIGURATION, "x").category == ProviderFailure.CONFIGURATION
+    assert ProviderError("gemini", ProviderErrorKind.INVALID_RESPONSE, "x").category == ProviderFailure.INVALID_RESPONSE
+    assert ProviderError("gemini", ProviderErrorKind.CONFIGURATION, "x").status_code is None
+
+
+# --- Bounded retry ---------------------------------------------------------------------------------
+
+from app.agent.providers import gemini as gemini_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_real_sleep(monkeypatch) -> list[float]:
+    """No test in this module ever waits: retries record their delays instead."""
+    slept: list[float] = []
+    monkeypatch.setattr(gemini_module, "_sleep", slept.append)
+    return slept
+
+
+class SequenceModels:
+    """Answers each generate_content call with the next outcome: an exception is raised, a response returned."""
+
+    def __init__(self, *outcomes) -> None:
+        self._outcomes, self.calls = list(outcomes), []
+
+    def generate_content(self, *, model, contents, config):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def retrying_provider(*outcomes):
+    models = SequenceModels(*outcomes)
+    slept: list[float] = []
+    events: list[str] = []
+    provider = GeminiProvider(SETTINGS, client=SimpleNamespace(models=models), sleep=slept.append, events=events.append)
+    return provider, models, slept, events
+
+
+OK = response(text_part("שלום"))
+
+
+@pytest.mark.parametrize(
+    "failures",
+    [
+        [FakeAPIError(503)],
+        [FakeAPIError(503), FakeAPIError(503)],
+        [FakeAPIError(500), FakeAPIError(502)],
+        [transport("ConnectError", FakeNetworkError)],
+        [transport("ReadTimeout", FakeTimeoutException)],
+        [FakeAPIError(504)],
+    ],
+)
+def test_retryable_failures_then_success(failures) -> None:
+    provider, models, slept, _ = retrying_provider(*failures, OK)
+
+    assert provider.complete("s", [Message.user("x")], [FIND_CAR]) == Message.assistant("שלום")
+    assert len(models.calls) == len(failures) + 1
+    assert slept == [1.0, 2.0][: len(failures)]
+
+
+def test_three_503s_raise_after_three_attempts() -> None:
+    provider, models, slept, _ = retrying_provider(FakeAPIError(503), FakeAPIError(503), FakeAPIError(503))
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("s", [Message.user("x")], [])
+
+    assert (info.value.category, info.value.status_code, info.value.retryable) == (ProviderFailure.SERVER_ERROR, 503, True)
+    assert len(models.calls) == 3 and slept == [1.0, 2.0]
+    assert info.value.__cause__ is None and FAKE_KEY not in str(info.value)
+
+
+def test_rate_limited_is_not_retried() -> None:
+    provider, models, slept, events = retrying_provider(FakeAPIError(429), OK)
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("s", [Message.user("x")], [])
+
+    assert (info.value.category, info.value.status_code, info.value.retryable) == (ProviderFailure.RATE_LIMITED, 429, False)
+    assert len(models.calls) == 1 and slept == []
+    assert events == ["provider attempt 1 failed category=rate_limited status=429 retryable=no"]
+
+
+def test_429_after_a_503_stops_the_retries() -> None:
+    provider, models, slept, _ = retrying_provider(FakeAPIError(503), FakeAPIError(429), OK)
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("s", [Message.user("x")], [])
+
+    assert info.value.category == ProviderFailure.RATE_LIMITED
+    assert len(models.calls) == 2 and slept == [1.0]
+
+
+@pytest.mark.parametrize("error", [FakeAPIError(400), FakeAPIError(401), FakeAPIError(403), FakeAPIError(404), RuntimeError("x")])
+def test_non_retryable_failures_are_not_retried(error) -> None:
+    provider, models, slept, _ = retrying_provider(error, OK)
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("s", [Message.user("x")], [])
+
+    assert not info.value.retryable
+    assert len(models.calls) == 1 and slept == []
+
+
+def test_invalid_response_is_not_retried() -> None:
+    blocked = SimpleNamespace(candidates=[], prompt_feedback=None)
+    provider, models, slept, _ = retrying_provider(blocked, OK)
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("s", [Message.user("x")], [])
+
+    assert info.value.kind == ProviderErrorKind.INVALID_RESPONSE
+    assert len(models.calls) == 1 and slept == []
+
+
+def test_configuration_error_is_not_retried(monkeypatch, no_real_sleep) -> None:
+    monkeypatch.setitem(sys.modules, "google.genai", None)
+
+    with pytest.raises(ProviderError) as info:
+        GeminiProvider(SETTINGS).complete("", [Message.user("x")], [])
+
+    assert info.value.category == ProviderFailure.CONFIGURATION
+    assert no_real_sleep == []
+
+
+def test_every_attempt_sends_the_identical_request() -> None:
+    history = [
+        Message.user("יש לי קורולה קרוס"),
+        Message.assistant(tool_calls=[ToolCall("fc-1", "find_car", {"query": "קורולה קרוס"}, base64.b64encode(b"sig").decode())]),
+        Message.tool([ToolResult("fc-1", "find_car", {"status": "identified"})]),
+    ]
+    provider, models, _, _ = retrying_provider(FakeAPIError(503), FakeAPIError(503), OK)
+
+    provider.complete("system", history, [FIND_CAR])
+
+    first, second, third = models.calls
+    assert first == second == third
+    assert first["contents"] is second["contents"] is third["contents"]  # built once, not rebuilt
+
+
+def test_function_call_reply_after_a_retry_is_the_same_as_without_one() -> None:
+    reply = response(call_part("compare_alternative", {"car": "אטו 3"}, call_id="fc-9", signature=b"sig"))
+    direct = GeminiProvider(SETTINGS, client=fake_client(reply)).complete("s", [Message.user("x")], [FIND_CAR])
+    provider, _, _, _ = retrying_provider(FakeAPIError(503), reply)
+
+    retried = provider.complete("s", [Message.user("x")], [FIND_CAR])
+
+    assert retried == direct
+    assert retried.tool_calls[0].name == "compare_alternative" and dict(retried.tool_calls[0].arguments) == {"car": "אטו 3"}
+
+
+def test_retry_events_are_safe() -> None:
+    provider, _, _, events = retrying_provider(FakeAPIError(503), transport("ReadTimeout", FakeTimeoutException), OK)
+
+    provider.complete("s", [Message.user("שכר 18,500")], [FIND_CAR])
+
+    assert events == [
+        "provider attempt 1 failed category=server_error status=503 retryable=yes",
+        "provider retrying in 1.0s",
+        "provider attempt 2 started",
+        "provider attempt 2 failed category=timeout status=- retryable=yes",
+        "provider retrying in 2.0s",
+        "provider attempt 3 started",
+    ]
+    text = "\n".join(events)
+    for secret in (FAKE_KEY, "example.invalid", "18,500", "find_car", "ERROR."):
+        assert secret not in text
+
+
+def test_no_events_and_no_retry_on_success() -> None:
+    provider, models, slept, events = retrying_provider(OK)
+
+    provider.complete("s", [Message.user("x")], [])
+
+    assert (len(models.calls), slept, events) == (1, [], [])

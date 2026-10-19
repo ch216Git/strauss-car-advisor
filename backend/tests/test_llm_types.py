@@ -68,7 +68,7 @@ def test_tool_spec_defaults_to_no_parameters() -> None:
 @pytest.mark.parametrize(
     "kind, retryable",
     [
-        (ProviderErrorKind.RATE_LIMITED, True),
+        (ProviderErrorKind.RATE_LIMITED, False),
         (ProviderErrorKind.UNAVAILABLE, True),
         (ProviderErrorKind.AUTHENTICATION, False),
         (ProviderErrorKind.CONFIGURATION, False),
