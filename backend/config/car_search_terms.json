@@ -1,0 +1,43 @@
+{
+  "note": "Search vocabulary for finding catalogue cars from what people type: Hebrew model names, English manufacturer names and spelling variants, each mapped to words of the catalogue cars' CSV manufacturer, CSV commercial name or drive (rules.json valueOfUse.driveField). Not business data. Every target must exist in the catalogue; this is checked when the search index is built. Keys and targets are normalized the same way as user input (case, hyphens, apostrophes, final letters).",
+  "terms": {
+    "toyota": "טויוטה",
+    "kia": "קיה",
+    "hyundai": "יונדאי",
+    "mazda": "מזדה",
+    "skoda": "סקודה",
+    "seat": "סיאט",
+    "tesla": "טסלה",
+    "byd": "בי ווי די",
+    "מאזדה": "מזדה",
+    "טיוטה": "טויוטה",
+    "אם גי": "mg",
+
+    "פיקנטו": "picanto",
+    "יאריס": "yaris",
+    "דולפין": "dolphin",
+    "לאון": "leon",
+    "נירו": "niro",
+    "קורולה": "corolla",
+    "קרוס": "cross",
+    "קונה": "kona",
+    "אטו": "atto",
+    "טוסון": "tucson",
+    "מודל": "model",
+    "אוקטביה": "octavia",
+    "אוקטאביה": "octavia",
+    "ספורטז": "sportage",
+    "ספורטאז": "sportage",
+    "סיל": "seal",
+    "ראב": "rav",
+    "קרניבל": "carnival",
+    "סנטה פה": "santa fe",
+
+    "חשמלית": "חשמלי",
+    "electric": "חשמלי",
+    "היברידית": "היברידי",
+    "hybrid": "היברידי",
+    "plugin": "פלאג-אין",
+    "plug in": "פלאג-אין"
+  }
+}

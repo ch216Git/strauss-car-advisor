@@ -65,7 +65,7 @@ class Employee:
     pension_rate: float  # fraction, 0.06 = 6%
     training_fund_rate: float  # fraction
     credit_points: float
-    eligible_children: int  # children up to rules familyTrack.childMaxAge
+    eligible_children: int | None  # children up to rules familyTrack.childMaxAge; None = unknown
     current: Situation  # participation must be stated for a current car
 
 
@@ -94,6 +94,12 @@ class Change:
     @property
     def difference(self) -> float:
         return self.alternative - self.current
+
+
+@dataclass(frozen=True, slots=True)
+class EligibleOption:
+    alternative: Situation  # CompanyCar without participation, or Waiver
+    basis: str  # "own_group_or_lower", "family_track" or "waiver_allowed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,14 +134,14 @@ def compare(
         repository=repository or _default_repository(),
     )
     _check_supported(sources.rules)
-    occupation = _occupation(employee, sources)
+    occupation = _occupation(employee.occupation, sources.rules, sources.catalog)
     if isinstance(employee.current, CompanyCar) and employee.current.participation is None:
         raise ValueError("The current car's participation must be stated; catalogue defaults are for alternatives only")
 
     eligibility_basis = (
         "keeps_current_situation"
         if _same_situation(employee.current, alternative)
-        else _check_eligibility(employee, occupation, alternative, sources)
+        else _check_eligibility(occupation, employee.eligible_children, alternative, sources.rules, sources.catalog)
     )
     current_input, current_details = _resolve(employee, occupation, employee.current, sources)
     alternative_input, alternative_details = _resolve(employee, occupation, alternative, sources)
@@ -153,6 +159,36 @@ def compare(
         exact_net_difference=alternative_result.net - current.net,
         changes=_changes(current, alternative_result),
     )
+
+
+def eligible_alternatives(
+    occupation_name: str,
+    eligible_children: int | None,
+    *,
+    rules: Rules | None = None,
+    catalog: Catalog | None = None,
+) -> tuple[EligibleOption, ...]:
+    """Every alternative the employee may newly select: catalogue cars in order, then the waiver.
+
+    With eligible_children None (unknown), family-track cars are left out rather than guessed.
+    """
+    rules = rules or load_rules()
+    catalog = catalog or load_catalog()
+    _check_supported(rules)
+    occupation = _occupation(occupation_name, rules, catalog)
+    candidates: list[Situation] = [
+        CompanyCar(car.car_id)
+        for car in catalog.cars.values()
+        if eligible_children is not None or not is_family_track_car(car, rules)
+    ]
+    options = []
+    for alternative in [*candidates, Waiver()]:
+        try:
+            basis = _check_eligibility(occupation, eligible_children, alternative, rules, catalog)
+        except NotEligibleError:
+            continue
+        options.append(EligibleOption(alternative, basis))
+    return tuple(options)
 
 
 def display_shekels(amount: float) -> int:
@@ -187,17 +223,17 @@ def _check_supported(rules: Rules) -> None:
         raise NotImplementedError(f"rules.json valueOfUse.driveField has no {ELECTRIC_DRIVE!r} drive")
 
 
-def _occupation(employee: Employee, sources: _Sources) -> Occupation:
-    occupation = sources.catalog.occupations.get(employee.occupation)
+def _occupation(name: str, rules: Rules, catalog: Catalog) -> Occupation:
+    occupation = catalog.occupations.get(name)
     if occupation is None:
-        raise ValueError(f"Unknown occupation {employee.occupation!r}; known: {list(sources.catalog.occupations)}")
-    if occupation.group not in sources.rules.group_order:
+        raise ValueError(f"Unknown occupation {name!r}; known: {list(catalog.occupations)}")
+    if occupation.group not in rules.group_order:
         raise ValueError(f"Occupation {occupation.name!r} has group {occupation.group!r}, not in rules.json groupOrder")
     return occupation
 
 
-def _car(car_id: str, sources: _Sources) -> CatalogCar:
-    car = sources.catalog.cars.get(car_id)
+def _car(car_id: str, catalog: Catalog) -> CatalogCar:
+    car = catalog.cars.get(car_id)
     if car is None:
         raise ValueError(f"Unknown catalogue car {car_id!r}")
     return car
@@ -210,16 +246,19 @@ def _same_situation(current: Situation, alternative: Situation) -> bool:
     return isinstance(current, CompanyCar) and isinstance(alternative, CompanyCar) and current.car_id == alternative.car_id
 
 
-def _check_eligibility(employee: Employee, occupation: Occupation, alternative: Situation, sources: _Sources) -> str:
-    rules = sources.rules
+def _check_eligibility(
+    occupation: Occupation, eligible_children: int | None, alternative: Situation, rules: Rules, catalog: Catalog
+) -> str:
     if isinstance(alternative, Waiver):
         if not occupation.waiver_allowed:
             raise NotEligibleError("waiver_not_allowed", f"Occupation {occupation.name!r} does not allow waiving the car")
         return "waiver_allowed"
 
-    car = _car(alternative.car_id, sources)
+    car = _car(alternative.car_id, catalog)
     if is_family_track_car(car, rules):
-        check_family_track_eligibility(car, employee.eligible_children, rules)
+        if eligible_children is None:
+            raise ValueError("The number of children is needed to check a family-track car; it is unknown")
+        check_family_track_eligibility(car, eligible_children, rules)
         return "family_track"
     if car.group not in rules.group_order:
         raise ValueError(f"Catalogue car {car.car_id} has group {car.group!r}, not in rules.json groupOrder")
@@ -249,7 +288,7 @@ def _resolve(
         return _salary_input(employee, details), details
 
     rules = sources.rules
-    car = _car(situation.car_id, sources)
+    car = _car(situation.car_id, sources.catalog)
     record = lookup_vehicle(car, sources.repository, sources.lookup)
     drive = rules.value_of_use.drive_field.get(record.propulsion_code)
     if drive is None:
