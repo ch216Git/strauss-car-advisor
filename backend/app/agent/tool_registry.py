@@ -155,6 +155,7 @@ class Execution:
     content: dict[str, Any]  # JSON-compatible ToolResult content
     comparison: ComparisonSummary | None = None  # set when a comparison was calculated
     tool: str = ""  # the tool that actually ran: compare_alternative for find_car(purpose="alternative")
+    error: ToolError | None = None  # the structured error behind content, when the tool itself refused
 
 
 def execute(call: ToolCall, state: ConversationState, ctx: ToolContext) -> Execution:
@@ -217,7 +218,7 @@ def _run(tool: str, arguments: dict[str, Any], state: ConversationState, ctx: To
     outcome = _RUN[tool](state, ctx, **arguments)
     new_state = _track_cars(outcome.state, outcome.result, ctx)
     if isinstance(outcome.result, ToolError):
-        return Execution(new_state, _error_content(outcome.result, ctx.rules))
+        return Execution(new_state, _error_content(outcome.result, ctx.rules), error=outcome.result)
     comparison = outcome.result if isinstance(outcome.result, ComparisonSummary) else None
     return Execution(new_state, {"ok": True, **to_json(outcome.result, ctx.rules)}, comparison)
 

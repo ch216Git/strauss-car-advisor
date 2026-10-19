@@ -26,7 +26,7 @@ from app.agent.state import (
     RepTopic,
     open_questions,
 )
-from app.agent.tools import ComparisonSummary
+from app.agent.tools import ComparisonSummary, ToolError
 from app.car_search import normalize, prefix_stripped
 from app.comparison import SituationDetails, display_shekels
 from app.rules import Rules
@@ -40,6 +40,7 @@ class RoundCall:
     content: Mapping[str, Any]
     comparison: ComparisonSummary | None = None
     via: str | None = None  # the tool the model called, when it ran as another (find_car -> compare_alternative)
+    error: ToolError | None = None  # the structured error behind content, when the tool itself refused
 
 
 class ReplyKind(StrEnum):
@@ -85,8 +86,12 @@ def deterministic_reply(
     """The reply for a recognised round, or None to let the provider write it."""
     if not calls or may_ask_more(user_text):
         return None
-    if any(call.via for call in calls) and not plain_request(user_text):
-        return None  # a comparison the model reached by looking a car up: render it only when nothing else is asked
+    # A round the model reached by looking a car up (find_car -> compare_alternative): a comparison is
+    # rendered only when nothing else is asked; a car choice also for one question about choosing that car
+    # or its effect, since that question can only be answered once the car is known.
+    choosing = any(_outcome(call) == "car_needs_choice" for call in calls)
+    if any(call.via for call in calls) and not (choice_request if choosing else plain_request)(user_text):
+        return None
     if any((call.name, _outcome(call)) not in _RENDERABLE for call in calls):
         return None
 
@@ -174,6 +179,31 @@ def plain_request(text: str) -> bool:
     for token in normalize(text):
         forms = (token, *prefix_stripped(token))
         if any(form in _QUESTION_WORDS or form.startswith(_INFORMATION_STARTS) for form in forms):
+            return False
+    return True
+
+
+# Question words a car choice answers first: what choosing the car changes, whether it is possible, which
+# one ("כמה ישתנה לי הנטו אם אעבור לקורולה?", "איזו קורולה אפשר לקבל?"). Any other question word
+# (why, how, when, who...) goes to the provider.
+_CHOICE_QUESTION_WORDS = frozenset(normalize("מה כמה האם איזה איזו אילו"))
+_DEMONSTRATIVES = frozenset(normalize("זה זו זאת אלה"))
+
+
+def choice_request(text: str) -> bool:
+    """No request for information and at most choice-related question words: the check for a car choice
+    reached via find_car. "מה זה/זו ..." asks what a car is, so it is not a choice request."""
+    tokens = normalize(text)
+    for i, token in enumerate(tokens):
+        forms = (token, *prefix_stripped(token))
+        if any(form.startswith(_INFORMATION_STARTS) for form in forms):
+            return False
+        asked = next((form for form in forms if form in _QUESTION_WORDS), None)  # the token itself first
+        if asked is None:
+            continue
+        if asked not in _CHOICE_QUESTION_WORDS:
+            return False
+        if asked == "מה" and tokens[i + 1:i + 2] and tokens[i + 1] in _DEMONSTRATIVES:
             return False
     return True
 

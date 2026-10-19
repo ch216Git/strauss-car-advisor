@@ -1,0 +1,54 @@
+/* The approved design's visual system ("יועץ הרכב – זרימת אפליקציה"). */
+:root {
+  --ground: #ebeee8;
+  --surface: #ffffff;
+  --surface-muted: #f7f8f5;
+  --surface-sunk: #f4f5f1;
+  --ink: #16201b;
+  --ink-soft: #2e3833;
+  --muted: #48534d;
+  --muted-2: #55605a;
+  --faint: #6b756f;
+  --line: #dde1da;
+  --line-soft: #eef0eb;
+  --line-strong: #c9cfc6;
+
+  --accent: #0e6a5b;
+  --accent-strong: #0a4f44;
+  --accent-soft: #e1efeb;
+  --accent-tint: #f2f7f5;
+  --accent-border: #cfe3dd;
+  --accent-chip: #a9c9c1;
+  --on-accent: #ffffff;
+  --on-accent-soft: #d6eae4;
+
+  --loss: #a24a0b;
+  --refused-bg: #fbf1ea;
+  --refused-border: #edcdb6;
+  --refused-ink: #7a3608;
+
+  --estimate-bg: #fff6e8;
+  --estimate-border: #f0d4a8;
+  --estimate-ink: #4a2a05;
+  --estimate-strong: #8a4a06;
+  --badge-bg: #ffe7c2;
+  --badge-ink: #5a3204;
+
+  --error-bg: #fcebd9;
+  --error-border: #f2c9a2;
+  --error-ink: #6e3206;
+
+  --rep-bg: #e8eef8;
+  --rep-border: #c3d1ea;
+  --rep-ink: #1f3f7a;
+
+  --focus: #1f4fa8;
+
+  --font-body: "Heebo", "Segoe UI", "Arial Hebrew", Arial, sans-serif;
+  --font-display: "Rubik", "Heebo", "Segoe UI", Arial, sans-serif;
+
+  --radius-s: 10px;
+  --radius-m: 14px;
+  --radius-l: 20px;
+  --header-height: 64px;
+}

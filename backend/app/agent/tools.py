@@ -88,6 +88,9 @@ class ToolError:
     question_ids: tuple[str, ...] = ()  # for BLOCKED_BY_REPRESENTATIVE
     stage: str | None = None  # MISSING_DETAILS: "eligibility" when only the deciding facts are asked
     facts: dict[str, object] | None = None  # NOT_ELIGIBLE: the data the verdict rests on (catalogue, rules)
+    # compare_alternative: the alternative the error is about, for screens (app.agent.outcome).
+    # Not part of the tool's JSON result, so the model sees exactly what it saw before.
+    alternative: Situation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +319,8 @@ def compare_alternative(
     if participation is not None and participation < 0:
         return _error(state, ToolErrorCode.INVALID_ARGUMENT, f"participation must not be negative: {participation}")
 
+    alternative: Situation = Waiver() if waiver else CompanyCar(car_id, participation)
+
     blocking = blocking_questions(state)
     if blocking:
         return ToolOutcome(
@@ -324,10 +329,9 @@ def compare_alternative(
                 ToolErrorCode.BLOCKED_BY_REPRESENTATIVE,
                 "today's car is not in the catalogue; waiting for the representative",
                 question_ids=tuple(q.question_id for q in blocking),
+                alternative=alternative,
             ),
         )
-
-    alternative: Situation = Waiver() if waiver else CompanyCar(car_id, participation)
 
     # Eligibility first, on the facts known so far (Step 3 decides): no salary questions for an
     # alternative the employee cannot select, and only the facts that can change the verdict.
@@ -340,20 +344,26 @@ def compare_alternative(
     except NotEligibleError as e:
         return ToolOutcome(
             state,
-            ToolError(ToolErrorCode.NOT_ELIGIBLE, str(e), reason=e.reason, facts=_eligibility_facts(e.reason, alternative, state, ctx)),
+            ToolError(
+                ToolErrorCode.NOT_ELIGIBLE, str(e), reason=e.reason,
+                facts=_eligibility_facts(e.reason, alternative, state, ctx), alternative=alternative,
+            ),
         )
     if gate.missing:
         return ToolOutcome(
             state,
             ToolError(
                 ToolErrorCode.MISSING_DETAILS, "details that decide eligibility are needed first",
-                missing=gate.missing, stage="eligibility",
+                missing=gate.missing, stage="eligibility", alternative=alternative,
             ),
         )
 
     missing = missing_details(state, ctx.rules, alternative)
     if missing:
-        return _error(state, ToolErrorCode.MISSING_DETAILS, "details needed before comparing", missing=missing)
+        return ToolOutcome(
+            state,
+            ToolError(ToolErrorCode.MISSING_DETAILS, "details needed before comparing", missing=missing, alternative=alternative),
+        )
 
     employee = Employee(
         occupation=details.occupation,
@@ -371,7 +381,7 @@ def compare_alternative(
             employee, alternative, rules=ctx.rules, catalog=ctx.catalog, lookup=ctx.lookup, repository=ctx.repository
         )
     except NotEligibleError as e:
-        return ToolOutcome(state, ToolError(ToolErrorCode.NOT_ELIGIBLE, str(e), reason=e.reason))
+        return ToolOutcome(state, ToolError(ToolErrorCode.NOT_ELIGIBLE, str(e), reason=e.reason, alternative=alternative))
     except ValueError as e:
         return _error(state, ToolErrorCode.CANNOT_CALCULATE, str(e))
 

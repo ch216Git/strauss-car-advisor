@@ -1,0 +1,163 @@
+"""The HTTP API (Step 5): sessions, one chat turn per request, health. Transport only.
+
+Run from backend/:  uvicorn app.api.main:app
+
+The agent loop (run_turn) is called unchanged; every decision, figure and reply comes from it.
+This layer keeps conversations in memory, takes one turn at a time per session, commits a turn's
+state atomically (never after a provider failure) and maps the result to the public contract.
+Responses carry no tool, provider or debug data and no exception text; logs carry no values.
+"""
+
+import logging
+import threading
+from collections.abc import Callable
+
+from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.agent.agent import TurnStop, run_turn
+from app.agent.llm import LLMProvider, ProviderError
+from app.agent.tools import ToolContext
+from app.api.mapping import chat_response, error_response
+from app.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ErrorDetail,
+    ErrorOut,
+    HealthOut,
+    SessionCreated,
+)
+from app.api.sessions import SessionStore
+
+log = logging.getLogger("app.api")
+
+DEV_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")  # the Vite dev server
+
+MESSAGES = {
+    "session_not_found": "השיחה לא נמצאה. אפשר להתחיל שיחה חדשה.",
+    "turn_in_progress": "ההודעה הקודמת עדיין בטיפול. אפשר לשלוח שוב בעוד רגע.",
+    "invalid_request": "הבקשה אינה תקינה.",
+    "advisor_unavailable": "היועץ אינו זמין כרגע.",
+    "internal_error": "מצטער/ת, הייתה תקלה פנימית. אפשר לנסות שוב.",
+}
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, code: str, fields: list[str] | None = None) -> None:
+        super().__init__(code)
+        self.status, self.code, self.fields = status, code, fields
+
+
+def _gemini() -> LLMProvider:
+    from app.agent.providers.gemini import GeminiProvider, GeminiSettings
+    from app.env_file import load_env_files
+
+    load_env_files()
+    return GeminiProvider(GeminiSettings.from_env())
+
+
+class _Lazy:
+    """Built on first use, once: the app starts (and answers health) without a key or loaded data."""
+
+    def __init__(self, build: Callable[[], object]) -> None:
+        self._build, self._value, self._lock = build, None, threading.Lock()
+
+    def get(self):
+        with self._lock:
+            if self._value is None:
+                self._value = self._build()
+            return self._value
+
+
+def create_app(
+    provider: LLMProvider | None = None,
+    ctx: ToolContext | None = None,
+    store: SessionStore | None = None,
+    cors_origins: tuple[str, ...] = DEV_ORIGINS,
+) -> FastAPI:
+    providers = _Lazy(lambda: provider if provider is not None else _gemini())
+    contexts = _Lazy(lambda: ctx if ctx is not None else ToolContext.load())
+    sessions = store if store is not None else SessionStore()
+
+    app = FastAPI(title="Strauss car advisor API", version="1")
+    app.state.sessions = sessions
+    app.add_middleware(
+        CORSMiddleware, allow_origins=list(cors_origins), allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Content-Type"],
+    )
+
+    @app.exception_handler(ApiError)
+    def _api_error(request: Request, error: ApiError) -> JSONResponse:
+        return _error_json(error.status, error.code, error.fields)
+
+    @app.exception_handler(RequestValidationError)
+    def _invalid(request: Request, error: RequestValidationError) -> JSONResponse:
+        # Field names only: the default body would echo the request, including the employee's message.
+        names = sorted({".".join(str(part) for part in e["loc"] if part != "body") or "body" for e in error.errors()})
+        return _error_json(422, "invalid_request", names)
+
+    @app.get("/api/health", response_model=HealthOut)
+    def health() -> HealthOut:
+        return HealthOut()
+
+    @app.post("/api/sessions", response_model=SessionCreated, status_code=201)
+    def create_session() -> SessionCreated:
+        return SessionCreated(session_id=sessions.create().session_id)
+
+    @app.delete("/api/sessions/{session_id}", status_code=204)
+    def delete_session(session_id: str) -> Response:
+        sessions.delete(session_id)
+        return Response(status_code=204)
+
+    @app.post(
+        "/api/chat", response_model=ChatResponse, response_model_exclude_none=True,
+        responses={404: {"model": ErrorOut}, 409: {"model": ErrorOut}, 422: {"model": ErrorOut},
+                   500: {"model": ErrorOut}, 503: {"model": ErrorOut}},
+    )
+    def chat(request: ChatRequest) -> ChatResponse:
+        session = sessions.get(request.session_id)
+        if session is None:
+            raise ApiError(404, "session_not_found")
+        if not session.lock.acquire(blocking=False):
+            raise ApiError(409, "turn_in_progress")
+        try:
+            try:
+                advisor = providers.get()
+            except ProviderError:  # configuration (no key, no SDK): not the employee's to retry
+                log.warning("advisor unavailable: provider could not be created")
+                raise ApiError(503, "advisor_unavailable") from None
+            try:
+                tool_context = contexts.get()
+                turn = run_turn(
+                    session.state,
+                    request.message,
+                    advisor,
+                    tool_context,
+                    events=lambda event: log.warning("agent: %s", event),
+                )
+                if turn.stop == TurnStop.PROVIDER_ERROR:
+                    # Atomic turn: the state run_turn returned (with this message and the error reply)
+                    # is dropped and the turn number stays, so a retry starts from the same state.
+                    return error_response(session.session_id, session.turn, turn)
+                response = chat_response(session.session_id, session.turn + 1, turn, tool_context)
+            except Exception as e:  # never the exception text: it may contain employee values
+                log.error("internal error in turn: %s", type(e).__name__)
+                raise ApiError(500, "internal_error") from None
+            session.state = turn.state  # committed only once the whole response is built
+            session.turn += 1
+            return response
+        finally:
+            sessions.touch(session)
+            session.lock.release()
+
+    return app
+
+
+def _error_json(status: int, code: str, fields: list[str] | None = None) -> JSONResponse:
+    body = ErrorOut(error=ErrorDetail(code=code, message=MESSAGES[code], fields=fields))
+    return JSONResponse(status_code=status, content=body.model_dump(exclude_none=True))
+
+
+app = create_app()

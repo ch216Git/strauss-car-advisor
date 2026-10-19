@@ -12,7 +12,8 @@ from app.agent.agent import TurnStop, run_turn
 from app.agent.llm import Message, Role, ToolCall
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent.providers.gemini import to_gemini_request
-from app.agent.render import plain_request
+from app.agent.outcome import OutcomeKind
+from app.agent.render import choice_request, plain_request
 from app.agent.state import ConversationState
 from app.agent.tool_registry import SPECS, execute
 from app.agent.tools import ToolContext
@@ -133,6 +134,63 @@ def test_ambiguous_alternative_keeps_the_car_choice_flow(ctx: ToolContext) -> No
     assert result.state.alternative is None
 
 
+COROLLA_CHOICE = ("COROLLA (2026)", "COROLLA CROSS (2025)")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["כמה ישתנה לי הנטו אם אעבור לקורולה?", "איזו קורולה אפשר לקבל?", "האם אפשר לעבור לקורולה?", "מה יוצא לי אם אעבור לקורולה?"],
+)
+def test_a_question_about_switching_renders_the_car_choice_after_one_call(ctx: ToolContext, text: str) -> None:
+    # Regression: a single question word made the via-find_car guard reject the round, and the second
+    # provider call (rate limited in the real flow) turned a ready car choice into a temporary error.
+    events: list[str] = []
+    provider = StrictProvider(calls(find("קורולה", "alternative")))  # a second call fails the test
+    result = run_turn(ConversationState("c-1"), text, provider, ctx, events=events.append)
+
+    assert any(e.endswith(": find_car→compare_alternative=car_needs_choice") for e in events)
+    assert (provider.calls, result.stop, result.tool_rounds) == (1, TurnStop.RENDERED, 1)
+    assert "הרכב החלופי" in result.reply and all(name in result.reply for name in COROLLA_CHOICE)
+    assert (result.outcome.kind, result.outcome.choice_target) == (OutcomeKind.CAR_CHOICE, "alternative")
+    assert set(result.outcome.choice_car_ids) == {"CAR-07", "CAR-09"}
+    assert not ({"CAR-07", "CAR-09"} & result.state.usable_car_ids)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "מה זה קורולה?",  # what the car is
+        "ספר לי על הקורולה",
+        "למה אני לא יכול לקבל קורולה?",  # an explanation
+        "כמה ישתנה לי הנטו אם אעבור לקורולה, ומה עם טוסון?",  # two questions
+        "איך עוברים לקורולה? כמה זה עולה?",
+    ],
+)
+def test_information_and_compound_requests_with_a_car_choice_go_to_the_provider(ctx: ToolContext, text: str) -> None:
+    result, provider = turn(ctx, text, calls(find("קורולה", "alternative")), Message.assistant(MODEL_REPLY))
+
+    assert (provider.calls, result.stop, result.reply) == (2, TurnStop.REPLIED, MODEL_REPLY)
+    assert result.outcome.kind == OutcomeKind.CAR_CHOICE  # the decision is still known as data
+
+
+def test_a_comparison_via_find_car_still_needs_a_plain_request(ctx: ToolContext) -> None:
+    # The car-choice relaxation does not reach other outcomes: one question word still asks the provider.
+    result, provider = turn(
+        ctx, "כמה ישתנה לי הנטו אם אעבור לקרניבל?", calls(find("קרניבל", "alternative")), Message.assistant(MODEL_REPLY)
+    )
+
+    assert results(result.state)[0]["error"]["code"] == "missing_details"
+    assert (provider.calls, result.stop) == (2, TurnStop.REPLIED)
+
+
+@pytest.mark.parametrize("text", ["כמה ישתנה לי הנטו אם אעבור לקורולה?", "מה זה קורולה?"])
+def test_direct_compare_alternative_car_choice_is_unchanged(ctx: ToolContext, text: str) -> None:
+    result, provider = turn(ctx, text, calls(("compare_alternative", {"car": "קורולה"})))
+
+    assert (provider.calls, result.stop) == (1, TurnStop.RENDERED)
+    assert "הרכב החלופי" in result.reply and all(name in result.reply for name in COROLLA_CHOICE)
+
+
 def test_unknown_car_keeps_the_not_found_flow(ctx: ToolContext) -> None:
     result, provider = turn(ctx, "אפשר לקבל פרארי?", calls(find("פרארי", "alternative")), Message.assistant(MODEL_REPLY))
 
@@ -248,3 +306,23 @@ def test_e001_still_uses_three_provider_calls_with_the_same_reply(ctx: ToolConte
 )
 def test_plain_request(text: str, plain: bool) -> None:
     assert plain_request(text) is plain
+
+
+@pytest.mark.parametrize(
+    "text, choice",
+    [
+        ("אני רוצה לעבור לקורולה", True),
+        ("כמה ישתנה לי הנטו אם אעבור לקורולה?", True),  # "כמה" is read as itself, not כ + "מה"
+        ("איזו קורולה אפשר לקבל?", True),
+        ("ומה יוצא לי מקורולה?", True),
+        ("מה זה קורולה?", False),
+        ("ומה זו הקורולה?", False),
+        ("מהי קורולה?", False),
+        ("למה אי אפשר קורולה?", False),
+        ("איך מקבלים קורולה?", False),
+        ("ספר לי על קורולה", False),
+        ("אפשר פרטים על קורולה", False),
+    ],
+)
+def test_choice_request(text: str, choice: bool) -> None:
+    assert choice_request(text) is choice

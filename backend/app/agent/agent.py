@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.agent.llm import LLMProvider, Message, ProviderError, ToolResult
+from app.agent.outcome import TurnOutcome, round_outcome
 from app.agent.output_check import discloses_estimate, unsupported_numbers
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent.render import ReplyKind, RoundCall, deterministic_reply
@@ -57,6 +58,7 @@ class TurnResult:
     tool_rounds: int
     timings: tuple[RoundTiming, ...] = ()  # one per provider call, in order
     total_seconds: float = 0.0
+    outcome: TurnOutcome | None = None  # the turn's last decisive tool outcome, as data (app.agent.outcome)
 
 
 def run_turn(
@@ -75,10 +77,11 @@ def run_turn(
     state = with_messages(start_turn(state, user_text, ctx), Message.user(user_text))
     comparison: ComparisonSummary | None = None  # the last comparison calculated in this turn
     timings: list[RoundTiming] = []
+    outcome: TurnOutcome | None = None
 
     def finish(text: str, stop: TurnStop, rounds: int) -> TurnResult:
         final = with_messages(state, Message.assistant(text))
-        return TurnResult(final, text, stop, rounds, tuple(timings), clock() - started)
+        return TurnResult(final, text, stop, rounds, tuple(timings), clock() - started, outcome)
 
     for rounds in range(MAX_TOOL_ROUNDS + 1):
         number = rounds + 1
@@ -116,10 +119,14 @@ def run_turn(
             results.append(ToolResult(call.call_id, call.name, execution.content))  # answers the call as made
             tool = execution.tool or call.name  # what actually ran (find_car "alternative" runs a comparison)
             round_calls.append(
-                RoundCall(tool, execution.content, execution.comparison, via=call.name if tool != call.name else None)
+                RoundCall(
+                    tool, execution.content, execution.comparison,
+                    via=call.name if tool != call.name else None, error=execution.error,
+                )
             )
             if execution.comparison is not None:
                 comparison = execution.comparison
+        outcome = round_outcome(round_calls, outcome)
         state = with_messages(state, Message.tool(results))
         timings.append(RoundTiming(provider_seconds, clock() - tools_started))
         outcomes = ", ".join(
