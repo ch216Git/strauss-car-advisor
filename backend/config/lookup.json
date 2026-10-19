@@ -1,0 +1,7 @@
+{
+  "note": "How to look up catalogue cars in the Tax Authority use-value CSV. These are dataset settings, not business rules - business rules are in rules.json.",
+  "taxYear": 2026,
+  "taxYearNote": "Tax year column of the use-value dataset (רשות המסים - הקובץ המורחב 2026). Not the same as rules.json netMethod.taxYear, which is the year of the income-tax tables.",
+  "catalogueVehicleType": 1,
+  "catalogueVehicleTypeNote": "DATASET ASSUMPTION, NOT A BUSINESS RULE. The workbook catalogue has no vehicle-type column, but the CSV lookup key needs one. Every catalogue car the CSV resolves is type 1; with type 2, CAR-10's key (BYD, model 3, 2025) matches a different vehicle (TANG). Re-check with scripts/verify_catalog.py whenever the catalogue or the CSV changes."
+}

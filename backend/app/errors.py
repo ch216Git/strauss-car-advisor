@@ -9,8 +9,16 @@ class AmbiguousVehicleError(LookupError):
     """More than one record matches the requested key."""
 
 
-class RulesConfigError(ValueError):
-    """The rules file is missing, unreadable, or a value in it is invalid.
+class NotEligibleError(Exception):
+    """The employee is not eligible for the requested option; reason is a short machine-readable code."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class ConfigError(ValueError):
+    """A config or data file is missing, unreadable, or a value in it is invalid.
 
     Message: "<file>: <key path>: expected <expected>, found <found>".
     """

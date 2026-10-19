@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from app.errors import RulesConfigError
-from app.rules import DEFAULT_RULES_PATH, TOP_LEVEL, Rules, TaxBracket, load_rules
+from app.errors import ConfigError
+from app.config_file import TOP_LEVEL
+from app.rules import DEFAULT_RULES_PATH, Rules, TaxBracket, load_rules
 
 # Values copied by hand from the challenge workbook ('כללים ונתונים', 'קטלוג רכבים',
 # 'חישובים'); they act as an independent oracle for the parsing, not as business logic.
@@ -97,8 +98,8 @@ def test_rules_are_immutable(rules: Rules) -> None:
 
 # Every config error carries the file, the exact key path, what was expected and what was found.
 
-def load_error(path: Path) -> RulesConfigError:
-    with pytest.raises(RulesConfigError) as info:
+def load_error(path: Path) -> ConfigError:
+    with pytest.raises(ConfigError) as info:
         load_rules(path)
     error = info.value
     assert error.file == path.resolve()
@@ -106,7 +107,7 @@ def load_error(path: Path) -> RulesConfigError:
     return error
 
 
-def broken_rules_error(tmp_path: Path, mutate) -> RulesConfigError:
+def broken_rules_error(tmp_path: Path, mutate) -> ConfigError:
     """Break one thing in a copy of the real file; rules.json itself is never changed."""
     data = raw_rules()
     mutate(data)
@@ -124,7 +125,7 @@ def test_message_format(tmp_path: Path) -> None:
 def test_missing_file_raises(tmp_path: Path) -> None:
     error = load_error(tmp_path / "nope.json")
 
-    assert (error.path, error.expected, error.found) == (TOP_LEVEL, "an existing rules file", "no such file")
+    assert (error.path, error.expected, error.found) == (TOP_LEVEL, "an existing config file", "no such file")
 
 
 def test_invalid_json_raises(tmp_path: Path) -> None:

@@ -9,17 +9,16 @@ from pathlib import Path
 
 import openpyxl
 
+from app.catalog import find_workbook
 from app.errors import AmbiguousVehicleError, VehicleNotFoundError
+from app.lookup_config import load_lookup_config
 from app.models import VehicleRecord
 from app.rules import load_rules
 from app.vehicle_repository import VehicleRepository
+from app.workbook_columns import CATALOG_COLUMN_TO_FIELD, CATALOG_CROSS_CHECK_COLUMNS, CATALOG_SHEET
 
-DATA_DIR = Path(__file__).parent.parent / "data"
-CATALOG_SHEET = "קטלוג רכבים"
-
-# The workbook states its use values come from the Tax Authority's 2026 dataset.
-TAX_YEAR = 2026
-# The catalog has no vehicle-type column; these are the only codes present in the CSV.
+# Deliberately tries every vehicle type in the CSV, not just lookup.json catalogueVehicleType:
+# this script is what checks that dataset assumption.
 CANDIDATE_VEHICLE_TYPE_CODES = (1, 2)
 
 
@@ -44,40 +43,34 @@ class CheckResult:
     error: str | None
 
 
-def find_catalog_file() -> Path:
-    matches = [p for p in DATA_DIR.glob("*.xlsx") if CATALOG_SHEET in openpyxl.load_workbook(p, read_only=True).sheetnames]
-    if len(matches) != 1:
-        raise RuntimeError(f"Expected one workbook with sheet '{CATALOG_SHEET}' in {DATA_DIR}, found {len(matches)}")
-    return matches[0]
-
-
 def read_catalog(path: Path) -> list[CatalogVehicle]:
     sheet = openpyxl.load_workbook(path, read_only=True, data_only=True)[CATALOG_SHEET]
     header, *rows = sheet.iter_rows(values_only=True)
-    col = {name: i for i, name in enumerate(header)}
+    column_to_field = {**CATALOG_COLUMN_TO_FIELD, **CATALOG_CROSS_CHECK_COLUMNS}
+    col = {column_to_field[name]: i for i, name in enumerate(header) if name in column_to_field}
     return [
         CatalogVehicle(
-            vehicle_id=row[col["מזהה"]],
-            manufacturer=row[col["תוצר"]],
-            commercial_name=row[col["דגם (כינוי מסחרי)"]],
-            manufacturer_code=int(row[col["קוד תוצר"]]),
-            model_code=int(row[col["קוד דגם"]]),
-            registration_year=int(row[col["שנת רישום"]]),
-            propulsion=row[col["הנעה"]],
-            list_price=int(row[col["מחיר מחירון"]]),
-            use_value=int(row[col["שווי שימוש חודשי"]]),
+            vehicle_id=row[col["car_id"]],
+            manufacturer=row[col["manufacturer"]],
+            commercial_name=row[col["commercial_name"]],
+            manufacturer_code=int(row[col["manufacturer_code"]]),
+            model_code=int(row[col["model_code"]]),
+            registration_year=int(row[col["registration_year"]]),
+            propulsion=row[col["propulsion"]],
+            list_price=int(row[col["list_price"]]),
+            use_value=int(row[col["use_value"]]),
         )
         for row in rows
-        if row[col["מזהה"]]
+        if row[col["car_id"]]
     ]
 
 
-def check(repo: VehicleRepository, vehicle: CatalogVehicle) -> CheckResult:
+def check(repo: VehicleRepository, vehicle: CatalogVehicle, tax_year: int) -> CheckResult:
     found: list[tuple[int, VehicleRecord]] = []
     for type_code in CANDIDATE_VEHICLE_TYPE_CODES:
         try:
             record = repo.find_exact(
-                tax_year=TAX_YEAR,
+                tax_year=tax_year,
                 registration_year=vehicle.registration_year,
                 vehicle_type_code=type_code,
                 manufacturer_code=vehicle.manufacturer_code,
@@ -125,12 +118,13 @@ def anomalies(result: CheckResult, propulsion_codes: dict[str, int]) -> list[str
 
 
 def main() -> None:
-    catalog_path = find_catalog_file()
+    catalog_path = find_workbook()
+    tax_year = load_lookup_config().tax_year
     repo = VehicleRepository()
-    results = [check(repo, v) for v in read_catalog(catalog_path)]
+    results = [check(repo, v, tax_year) for v in read_catalog(catalog_path)]
 
     print(f"Catalog: {catalog_path.name} / {CATALOG_SHEET}")
-    print(f"Lookup key: tax_year={TAX_YEAR}, vehicle_type in {CANDIDATE_VEHICLE_TYPE_CODES}\n")
+    print(f"Lookup key: tax_year={tax_year}, vehicle_type in {CANDIDATE_VEHICLE_TYPE_CODES}\n")
 
     columns = ["Vehicle", "Product Code", "Model Code", "Found", "Catalog Use Value", "Tax CSV Use Value", "Match"]
     rows = []
