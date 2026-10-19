@@ -19,7 +19,11 @@ from app.agent.llm import Message, ProviderError, ProviderErrorKind, Role, ToolC
 PROVIDER = "gemini"
 API_KEY_VARIABLE = "GEMINI_API_KEY"
 MODEL_VARIABLE = "GEMINI_MODEL"
+TIMEOUT_VARIABLE = "GEMINI_TIMEOUT_SECONDS"
 DEFAULT_MODEL = "gemini-flash-latest"
+# Per request. Without it google-genai builds its HTTP client with timeout=None (wait forever) and,
+# with no retry_options, makes a single attempt - so this bounds every generate_content call.
+DEFAULT_TIMEOUT_SECONDS = 60.0
 LOCAL_CALL_ID_PREFIX = "local-"  # call IDs we made up because Gemini sent none; not sent back
 
 
@@ -27,6 +31,7 @@ LOCAL_CALL_ID_PREFIX = "local-"  # call IDs we made up because Gemini sent none;
 class GeminiSettings:
     api_key: str = field(repr=False)
     model: str = DEFAULT_MODEL
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     @staticmethod
     def from_env(environ: Mapping[str, str] | None = None) -> "GeminiSettings":
@@ -35,7 +40,7 @@ class GeminiSettings:
         if not api_key:
             raise ProviderError(PROVIDER, ProviderErrorKind.CONFIGURATION, f"{API_KEY_VARIABLE} is not set")
         model = environ.get(MODEL_VARIABLE, "").strip() or DEFAULT_MODEL
-        return GeminiSettings(api_key=api_key, model=model)
+        return GeminiSettings(api_key=api_key, model=model, timeout_seconds=_timeout(environ))
 
 
 class GeminiProvider:
@@ -48,11 +53,15 @@ class GeminiProvider:
         self._client = client
 
     def __repr__(self) -> str:
-        return f"GeminiProvider(model={self._settings.model!r})"
+        return f"GeminiProvider(model={self._settings.model!r}, timeout_seconds={self._settings.timeout_seconds})"
 
     @property
     def model(self) -> str:
         return self._settings.model
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._settings.timeout_seconds
 
     def complete(self, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Message:
         contents, config = to_gemini_request(system, messages, tools)
@@ -68,7 +77,7 @@ class GeminiProvider:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            self._client = _create_client(self._settings.api_key)
+            self._client = _create_client(self._settings.api_key, self._settings.timeout_seconds)
         return self._client
 
 
@@ -178,7 +187,20 @@ def _enum_name(value: Any) -> str:
 
 # --- Client and errors ------------------------------------------------------------
 
-def _create_client(api_key: str) -> Any:
+def _timeout(environ: Mapping[str, str]) -> float:
+    raw = environ.get(TIMEOUT_VARIABLE, "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = 0.0
+    if not seconds > 0:
+        raise ProviderError(PROVIDER, ProviderErrorKind.CONFIGURATION, f"{TIMEOUT_VARIABLE} must be a number of seconds > 0")
+    return seconds
+
+
+def _create_client(api_key: str, timeout_seconds: float) -> Any:
     try:
         from google import genai
     except ImportError:
@@ -186,7 +208,8 @@ def _create_client(api_key: str) -> Any:
             PROVIDER, ProviderErrorKind.CONFIGURATION, "the google-genai package is not installed (pip install google-genai)"
         ) from None
     try:
-        return genai.Client(api_key=api_key)
+        # HttpOptions.timeout is in milliseconds; set on the client, it applies to every request.
+        return genai.Client(api_key=api_key, http_options={"timeout": round(timeout_seconds * 1000)})
     except Exception as e:
         raise ProviderError(
             PROVIDER, ProviderErrorKind.CONFIGURATION, f"could not create the client ({type(e).__name__})"
@@ -194,7 +217,9 @@ def _create_client(api_key: str) -> Any:
 
 
 # Transport failures from the SDK's HTTP client, recognized by name so httpx need not be imported.
-_TRANSPORT_ERRORS = ("ConnectError", "ConnectTimeout", "ReadTimeout", "TimeoutException", "NetworkError")
+_TRANSPORT_ERRORS = (
+    "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException", "NetworkError",
+)
 
 
 def _request_error(error: Exception) -> ProviderError:
@@ -204,7 +229,7 @@ def _request_error(error: Exception) -> ProviderError:
         kind = ProviderErrorKind.AUTHENTICATION
     elif code == 429:
         kind = ProviderErrorKind.RATE_LIMITED
-    elif isinstance(code, int) and code >= 500:
+    elif code == 408 or (isinstance(code, int) and code >= 500):  # 408/504: request timed out
         kind = ProviderErrorKind.UNAVAILABLE
     elif isinstance(error, (ConnectionError, TimeoutError)) or type(error).__name__.endswith(_TRANSPORT_ERRORS):
         kind = ProviderErrorKind.UNAVAILABLE

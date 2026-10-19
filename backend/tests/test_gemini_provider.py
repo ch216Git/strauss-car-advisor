@@ -9,6 +9,7 @@ import pytest
 from app.agent.llm import LLMProvider, Message, ProviderError, ProviderErrorKind, Role, ToolCall, ToolResult, ToolSpec
 from app.agent.providers.gemini import (
     DEFAULT_MODEL,
+    DEFAULT_TIMEOUT_SECONDS,
     LOCAL_CALL_ID_PREFIX,
     GeminiProvider,
     GeminiSettings,
@@ -270,7 +271,7 @@ def test_missing_sdk_is_a_configuration_error(monkeypatch) -> None:
 
 
 def test_client_creation_failure_hides_the_key(monkeypatch) -> None:
-    def failing_client(*, api_key):
+    def failing_client(*, api_key, http_options):
         raise ValueError(f"bad key {api_key}")
 
     fake_genai = SimpleNamespace(Client=failing_client)
@@ -287,8 +288,8 @@ def test_client_creation_failure_hides_the_key(monkeypatch) -> None:
 def test_real_client_is_created_lazily_with_the_settings_key(monkeypatch) -> None:
     created = []
 
-    def recording_client(*, api_key):
-        created.append(api_key)
+    def recording_client(*, api_key, http_options):
+        created.append((api_key, http_options))
         return fake_client(response(text_part("ok")))
 
     fake_genai = SimpleNamespace(Client=recording_client)
@@ -299,4 +300,74 @@ def test_real_client_is_created_lazily_with_the_settings_key(monkeypatch) -> Non
     assert created == []  # nothing created until the first request
     provider.complete("", [Message.user("x")], [])
     provider.complete("", [Message.user("y")], [])
-    assert created == [FAKE_KEY]
+    assert created == [(FAKE_KEY, {"timeout": 60_000})]
+
+
+# --- Request timeout ----------------------------------------------------------------------------
+
+def test_default_timeout() -> None:
+    assert GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY}).timeout_seconds == DEFAULT_TIMEOUT_SECONDS == 60.0
+
+
+def test_timeout_from_env() -> None:
+    settings = GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY, "GEMINI_TIMEOUT_SECONDS": " 15 "})
+
+    assert settings.timeout_seconds == 15.0
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-5", "nan"])
+def test_invalid_timeout_is_a_configuration_error(value: str) -> None:
+    with pytest.raises(ProviderError) as info:
+        GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY, "GEMINI_TIMEOUT_SECONDS": value})
+
+    assert info.value.kind == ProviderErrorKind.CONFIGURATION
+    assert "GEMINI_TIMEOUT_SECONDS" in str(info.value) and FAKE_KEY not in str(info.value)
+
+
+@pytest.mark.parametrize("seconds, milliseconds", [(60.0, 60_000), (15.0, 15_000), (2.5, 2_500)])
+def test_timeout_is_set_on_the_sdk_client_in_milliseconds(monkeypatch, seconds: float, milliseconds: int) -> None:
+    created = []
+
+    def recording_client(*, api_key, http_options):
+        created.append(http_options)
+        return fake_client(response(text_part("ok")))
+
+    fake_genai = SimpleNamespace(Client=recording_client)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google", SimpleNamespace(genai=fake_genai))
+
+    GeminiProvider(GeminiSettings(api_key=FAKE_KEY, timeout_seconds=seconds)).complete("", [Message.user("x")], [])
+
+    assert created == [{"timeout": milliseconds}]
+
+
+def named_error(name: str) -> Exception:
+    return type(name, (Exception,), {})(f"timed out; key={FAKE_KEY}")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        named_error("ReadTimeout"),  # httpx, when the request exceeds the timeout
+        named_error("WriteTimeout"),
+        named_error("PoolTimeout"),
+        named_error("ConnectTimeout"),
+        named_error("TimeoutException"),
+        FakeAPIError(408),
+        FakeAPIError(504),  # the server gave up (X-Server-Timeout)
+    ],
+)
+def test_timeouts_are_retryable_unavailable_errors(error: Exception) -> None:
+    provider = GeminiProvider(SETTINGS, client=fake_client(error=error))
+
+    with pytest.raises(ProviderError) as info:
+        provider.complete("", [Message.user("x")], [])
+
+    assert info.value.kind == ProviderErrorKind.UNAVAILABLE and info.value.retryable
+    assert FAKE_KEY not in str(info.value) and info.value.__cause__ is None
+
+
+def test_repr_shows_timeout_but_not_key() -> None:
+    text = repr(GeminiProvider(GeminiSettings(api_key=FAKE_KEY, timeout_seconds=30), client=fake_client()))
+
+    assert "timeout_seconds=30" in text and FAKE_KEY not in text

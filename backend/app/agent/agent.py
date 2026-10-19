@@ -60,7 +60,11 @@ def run_turn(
     provider: LLMProvider,
     ctx: ToolContext | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    events: Callable[[str], None] | None = None,
 ) -> TurnResult:
+    """events, if given, receives live progress lines as they happen: round numbers, timings,
+    tool names with ok / error code, and provider error kinds only - never values or prompts."""
+    emit = events or (lambda line: None)
     started = clock()
     ctx = ctx or ToolContext.load()
     state = with_messages(start_turn(state, user_text, ctx), Message.user(user_text))
@@ -72,13 +76,18 @@ def run_turn(
         return TurnResult(final, text, stop, rounds, tuple(timings), clock() - started)
 
     for rounds in range(MAX_TOOL_ROUNDS + 1):
+        number = rounds + 1
+        emit(f"round {number}: provider call started")
         call_started = clock()
         try:
             reply = provider.complete(SYSTEM_PROMPT, state.messages, SPECS)
-        except ProviderError:
+        except ProviderError as e:
             timings.append(RoundTiming(clock() - call_started, None))
+            emit(f"round {number}: provider error ({e.kind.value}) after {timings[-1].provider_seconds:.2f}s")
             return finish(PROVIDER_ERROR_REPLY, TurnStop.PROVIDER_ERROR, rounds)
         provider_seconds = clock() - call_started
+        returned = f"{len(reply.tool_calls)} tool calls" if reply.tool_calls else "final reply"
+        emit(f"round {number}: provider returned in {provider_seconds:.2f}s ({returned})")
 
         if not reply.tool_calls:
             timings.append(RoundTiming(provider_seconds, None))
@@ -86,6 +95,7 @@ def run_turn(
             return finish(text, stop, rounds)
         if rounds == MAX_TOOL_ROUNDS:
             timings.append(RoundTiming(provider_seconds, None))
+            emit(f"round {number}: round limit reached; tool calls not executed")
             break  # not executed and not recorded: a call without its result would break the history
 
         tools_started = clock()
@@ -99,8 +109,15 @@ def run_turn(
                 comparison = execution.comparison
         state = with_messages(state, Message.tool(results))
         timings.append(RoundTiming(provider_seconds, clock() - tools_started))
+        outcomes = ", ".join(f"{r.name}={_outcome(r.content)}" for r in results)
+        emit(f"round {number}: tools {timings[-1].tool_seconds:.2f}s: {outcomes}")
 
     return finish(MAX_ROUNDS_REPLY, TurnStop.MAX_ROUNDS, MAX_TOOL_ROUNDS)
+
+
+def _outcome(content) -> str:
+    """ok, or the error code: never the result itself."""
+    return "ok" if content.get("ok") else str(content.get("error", {}).get("code", "error"))
 
 
 def _checked_reply(text: str, state: ConversationState, comparison: ComparisonSummary | None) -> tuple[str, TurnStop]:

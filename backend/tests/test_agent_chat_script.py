@@ -64,21 +64,20 @@ def test_exit_words_and_end_of_input_stop_the_chat() -> None:
         assert written == []
 
 
-def test_debug_shows_tool_names_and_codes_but_no_values() -> None:
+def test_debug_is_live_and_shows_no_values() -> None:
     _, _, debugged = run_chat(ScriptedProvider(*details_then_reply()), [MESSAGE], debug=True)
 
-    assert len(debugged) == 3
-    assert re.fullmatch(
-        r"\[debug\] round 1: provider \d+\.\d\ds \| tools \d+\.\d\ds: "
-        r"save_employee_details=ok, find_car=ok, set_current_car=not_stated_by_employee",
-        debugged[0],
-    )
-    assert re.fullmatch(r"\[debug\] round 2: provider \d+\.\d\ds \| final reply", debugged[1])
-    assert re.fullmatch(
-        r"\[debug\] turn: stop=replied tool_rounds=1 provider=\d+\.\d\ds tools=\d+\.\d\ds total=\d+\.\d\ds "
-        r"status=collecting",
-        debugged[2],
-    )
+    patterns = [
+        r"\[debug\] round 1: provider call started",
+        r"\[debug\] round 1: provider returned in \d+\.\d\ds \(3 tool calls\)",
+        r"\[debug\] round 1: tools \d+\.\d\ds: save_employee_details=ok, find_car=ok, set_current_car=not_stated_by_employee",
+        r"\[debug\] round 2: provider call started",
+        r"\[debug\] round 2: provider returned in \d+\.\d\ds \(final reply\)",
+        r"\[debug\] turn: stop=replied tool_rounds=1 provider=\d+\.\d\ds tools=\d+\.\d\ds total=\d+\.\d\ds status=collecting",
+    ]
+    assert len(debugged) == len(patterns)
+    for line, pattern in zip(debugged, patterns):
+        assert re.fullmatch(pattern, line), line
     text = "\n".join(debugged)
     for secret in ("18500", "18,500", "999", "300", "מנהל", "קורולה", "CAR-09"):
         assert secret not in text
@@ -96,6 +95,6 @@ def test_unexpected_error_shows_no_details() -> None:
     state, written, debugged = run_chat(provider, ["שלום", "שלום"], debug=True)
 
     assert written == [INTERNAL_ERROR_REPLY, "שוב שלום"]
-    assert debugged[0] == "[debug] internal error: RuntimeError"
+    assert debugged[:2] == ["[debug] round 1: provider call started", "[debug] internal error: RuntimeError"]
     assert all("18500" not in line for line in written + debugged)
     assert [m.text for m in state.messages] == ["שלום", "שוב שלום"]  # the failed turn left no trace

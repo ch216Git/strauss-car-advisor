@@ -209,3 +209,69 @@ def test_timings_per_provider_call_and_round(ctx: ToolContext) -> None:
     assert first.provider_seconds == 1.0 and first.tool_seconds == 1.0
     assert final.provider_seconds == 1.0 and final.tool_seconds is None
     assert turn.total_seconds > first.provider_seconds + first.tool_seconds + final.provider_seconds
+
+
+# --- Live events --------------------------------------------------------------------------------
+
+class RecordingProvider:
+    """Records how many events existed when each call started, to prove "started" comes first."""
+
+    name = "recording"
+
+    def __init__(self, events: list[str], *steps) -> None:
+        self.events, self._steps, self.events_at_call = events, list(steps), []
+
+    def complete(self, system, messages, tools) -> Message:
+        self.events_at_call.append(list(self.events))
+        step = self._steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def test_started_event_is_emitted_before_each_provider_call(ctx: ToolContext) -> None:
+    events: list[str] = []
+    provider = RecordingProvider(events, calls(("find_car", {"query": "טוסון"})), Message.assistant("מצאתי"))
+
+    run_turn(ConversationState("c-1"), "יש לי טוסון", provider, ctx, events=events.append)
+
+    assert provider.events_at_call[0][-1] == "round 1: provider call started"
+    assert provider.events_at_call[1][-1] == "round 2: provider call started"
+    assert events[1].startswith("round 1: provider returned in ") and events[1].endswith("(1 tool calls)")
+    assert events[2].startswith("round 1: tools ") and events[2].endswith(": find_car=ok")
+    assert events[4].endswith("(final reply)")
+
+
+def test_provider_error_event_shows_only_the_kind(ctx: ToolContext) -> None:
+    from app.agent.llm import ProviderError, ProviderErrorKind
+
+    events: list[str] = []
+    error = ProviderError("gemini", ProviderErrorKind.UNAVAILABLE, "generate_content failed (ReadTimeout)")
+
+    turn = run_turn(ConversationState("c-1"), "שלום", RecordingProvider(events, error), ctx, events=events.append)
+
+    assert turn.stop == TurnStop.PROVIDER_ERROR
+    assert events[0] == "round 1: provider call started"
+    assert events[1].startswith("round 1: provider error (unavailable) after ") and "ReadTimeout" not in events[1]
+
+
+def test_events_carry_no_employee_values(ctx: ToolContext) -> None:
+    events: list[str] = []
+    provider = RecordingProvider(
+        events,
+        calls(("save_employee_details", E001_DETAILS), ("find_car", {"query": "קורולה קרוס"})),
+        Message.assistant("תודה"),
+    )
+
+    run_turn(ConversationState("c-1"), E001, provider, ctx, events=events.append)
+
+    text = "\n".join(events)
+    assert "save_employee_details=ok, find_car=ok" in text
+    for value in ("18500", "18,500", "2.75", "מנהל", "קורולה", "CAR-09"):
+        assert value not in text
+
+
+def test_no_events_by_default(ctx: ToolContext) -> None:
+    provider = ScriptedProvider(Message.assistant("שלום"))
+
+    assert run_turn(ConversationState("c-1"), "שלום", provider, ctx).reply == "שלום"
