@@ -1,7 +1,7 @@
 // The only module that talks to the backend. It sends a session ID and the employee's message,
 // never conversation state, and turns every failure into a safe, typed result.
 
-import type { AnswerRequest, ApiErrorBody, Catalogue, ChatResponse, Queue, QueueQuestion, Representative, SessionCreated, SessionRestored } from "./types";
+import type { AnswerRequest, ApiErrorBody, Catalogue, ChatResponse, DocumentDetails, Queue, QueueQuestion, Representative, SessionCreated, SessionRestored } from "./types";
 
 export type ApiFailure = {
   ok: false;
@@ -87,4 +87,11 @@ export function sendAnswer(answer: AnswerRequest): Promise<ApiResult<QueueQuesti
     headers: JSON_HEADERS,
     body: JSON.stringify(answer),
   });
+}
+
+/** Reads details from a file; nothing is saved until the employee confirms them in the chat. */
+export function uploadDocument(sessionId: string, file: File): Promise<ApiResult<DocumentDetails>> {
+  const form = new FormData();
+  form.append("file", file);
+  return request<DocumentDetails>(`/api/sessions/${encodeURIComponent(sessionId)}/document`, { method: "POST", body: form });
 }

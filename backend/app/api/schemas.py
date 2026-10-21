@@ -208,6 +208,27 @@ class CatalogueOut(_Out):
     cars: list[CarOut]
 
 
+# --- Details read from an uploaded file ------------------------------------------------------------
+
+class FoundDetailOut(_Out):
+    field: str  # app.agent.document.FIELDS
+    label: str  # Hebrew, as shown
+    value: str  # as shown and as confirmed in the chat, e.g. "18,500 ₪"
+
+
+class UnclearDetailOut(_Out):
+    field: str
+    label: str
+
+
+class DocumentOut(_Out):
+    """Only what Python confirmed in the file. Nothing is saved until the employee confirms it in the chat."""
+
+    found: list[FoundDetailOut]
+    unclear: list[UnclearDetailOut]  # mentioned in the file, but not certain: asked again in the chat
+    from_image: bool  # read from an image or a scan: the employee should check it closely
+
+
 class SessionCreated(_Out):
     session_id: str
     ui_state: UiState = UiState.IDLE

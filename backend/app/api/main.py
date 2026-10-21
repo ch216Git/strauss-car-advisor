@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, File, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,6 +26,7 @@ from app.agent.llm import LLMProvider, ProviderError
 from app.agent.outcome import carried_forward
 from app.agent.snapshot import SnapshotError, decode_token, encode_token
 from app.agent.tools import ToolContext
+from app.agent.document import FIELDS, MAX_FILE_BYTES, Document, DocumentError, DocumentReader, read_details
 from app.agent.representative import AnswerError, answer_question
 from app.api.mapping import catalogue, chat_response, error_response, queue_questions, representative_status
 from app.api.schemas import (
@@ -33,7 +34,9 @@ from app.api.schemas import (
     CatalogueOut,
     ChatRequest,
     ChatResponse,
+    DocumentOut,
     ErrorDetail,
+    FoundDetailOut,
     ErrorOut,
     HealthOut,
     QueueOut,
@@ -42,6 +45,7 @@ from app.api.schemas import (
     RestoreRequest,
     SessionCreated,
     SessionRestored,
+    UnclearDetailOut,
 )
 from app.api.sessions import SessionStore
 from app.env_file import load_env_files
@@ -61,6 +65,10 @@ MESSAGES = {
     "question_not_found": "השאלה לא נמצאה.",
     "already_answered": "כבר נשלחה תשובה לשאלה הזו.",
     "invalid_answer": "התשובה אינה מתאימה לשאלה. בדקו את השדות המסומנים.",
+    "file_too_large": "הקובץ גדול מדי. אפשר להעלות קובץ עד 5MB.",
+    "unsupported_file": "סוג הקובץ אינו נתמך. אפשר להעלות PDF, תמונה (PNG/JPG/WEBP), TXT, CSV או Excel.",
+    "unreadable_file": "לא הצלחנו לקרוא את הקובץ. אפשר לנסות קובץ אחר או לכתוב את הפרטים בשיחה.",
+    "document_unavailable": "קריאת הקובץ נכשלה כרגע. אפשר לנסות שוב בעוד רגע או לכתוב את הפרטים בשיחה.",
 }
 
 
@@ -82,6 +90,13 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str, fields: list[str] | None = None) -> None:
         super().__init__(code)
         self.status, self.code, self.fields = status, code, fields
+
+
+def _gemini_reader() -> DocumentReader:
+    from app.agent.providers.gemini import GeminiDocumentReader, GeminiSettings
+
+    load_env_files()
+    return GeminiDocumentReader(GeminiSettings.from_env(), events=lambda line: log.warning("gemini: %s", line))
 
 
 def _gemini() -> LLMProvider:
@@ -112,10 +127,12 @@ def create_app(
     store: SessionStore | None = None,
     cors_origins: tuple[str, ...] = DEV_ORIGINS,
     signing_key: bytes | None = None,
+    document_reader: DocumentReader | None = None,
     clock: Callable[[], int] = lambda: int(time.time()),
 ) -> FastAPI:
     providers = _Lazy(lambda: provider if provider is not None else _gemini())
     contexts = _Lazy(lambda: ctx if ctx is not None else ToolContext.load())
+    readers = _Lazy(lambda: document_reader if document_reader is not None else _gemini_reader())
     sessions = store if store is not None else SessionStore()
     # Resolved once at start-up, after .env is loaded (see history_signing_key); never logged.
     key = signing_key if signing_key is not None else history_signing_key()
@@ -214,6 +231,42 @@ def create_app(
             raise ApiError(410, "resume_unavailable") from None
         session = sessions.create(state=state, turn=turn)
         return SessionRestored(session_id=session.session_id, turn=session.turn)
+
+    # --- Details from an uploaded file ----------------------------------------------------------
+
+    @app.post(
+        "/api/sessions/{session_id}/document", response_model=DocumentOut,
+        responses={404: {"model": ErrorOut}, 413: {"model": ErrorOut}, 415: {"model": ErrorOut},
+                   422: {"model": ErrorOut}, 503: {"model": ErrorOut}},
+    )
+    def read_document(session_id: str, response: Response, file: UploadFile = File(...)) -> DocumentOut:
+        """Reads the file and returns only what is certain. Saves nothing: the employee confirms in the chat.
+        The file is never stored, and neither it nor its content is logged."""
+        if sessions.get(session_id) is None:
+            raise ApiError(404, "session_not_found")
+        data = file.file.read(MAX_FILE_BYTES + 1)
+        document = Document(file.filename or "", data)
+        try:
+            reader = readers.get()
+        except ProviderError:
+            log.warning("document reader unavailable: provider could not be created")
+            raise ApiError(503, "advisor_unavailable") from None
+        try:
+            details = read_details(document, reader, contexts.get())
+        except DocumentError as error:
+            status = {"file_too_large": 413, "unsupported_file": 415}.get(error.code, 422)
+            log.warning("document rejected: %s", error.code)
+            raise ApiError(status, error.code) from None
+        except ProviderError as error:
+            log.warning("document read failed: category=%s", error.category.value)
+            raise ApiError(503, "document_unavailable") from None
+        log.warning("document read: found=%d unclear=%d", len(details.found), len(details.unclear))  # counts only
+        response.headers["Cache-Control"] = "no-store"
+        return DocumentOut(
+            found=[FoundDetailOut(field=f.field, label=f.label, value=f.value) for f in details.found],
+            unclear=[UnclearDetailOut(field=f, label=FIELDS[f]) for f in details.unclear],
+            from_image=details.from_image,
+        )
 
     # --- The transport representative ---------------------------------------------------------
     # No authentication, like the rest of this hackathon API: before production these routes need

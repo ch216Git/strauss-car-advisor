@@ -163,3 +163,11 @@ export interface AnswerRequest {
   participation?: number;
   car_id?: string;
 }
+
+// --- Details read from an uploaded file ------------------------------------------------------------
+
+export interface DocumentDetails {
+  found: { field: string; label: string; value: string }[]; // only what the backend confirmed in the file
+  unclear: { field: string; label: string }[]; // mentioned but not certain: the advisor asks again
+  from_image: boolean; // read from an image or a scan
+}

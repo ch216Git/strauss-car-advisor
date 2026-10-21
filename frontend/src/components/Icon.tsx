@@ -15,6 +15,7 @@ const PATHS = {
   history: "M3 12a9 9 0 1 0 3-6.7M3 4v3.5h3.5M12 7v5l3.5 2",
   trash: "M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13",
   close: "M6 6l12 12M18 6L6 18",
+  attach: "M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8",
 } as const;
 
 export type IconName = keyof typeof PATHS;

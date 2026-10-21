@@ -1455,3 +1455,92 @@ button:disabled {
 a.button {
   text-decoration: none;
 }
+
+/* --- Details from an uploaded file ------------------------------------------------------------- */
+
+.composer__attach {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer__attach:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+.composer__attach:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.composer__attach--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.card--document {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.document__name {
+  direction: ltr;
+  text-align: right;
+  word-break: break-all;
+}
+
+.document__reading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.document__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.document__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.document__item input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.document__label {
+  flex: 1;
+  font-weight: 500;
+}
+
+.document__value {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.document__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

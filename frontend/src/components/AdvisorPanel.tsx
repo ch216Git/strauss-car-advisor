@@ -9,7 +9,7 @@ import { PendingState } from "./PendingState";
 const SUGGESTIONS = ["אפשר לקבל קרניבל?", "יש לי קורולה קרוס. כמה ישתנה הנטו אם אעבור לאטו 3?"];
 const GREETING = "שלום! על איזה רכב חשבת? אפשר לשאול במילים שלך, ואבדוק מה זה אומר עבורך.";
 
-export function AdvisorPanel({ advisor }: { advisor: Advisor }) {
+export function AdvisorPanel({ advisor, onAttach }: { advisor: Advisor; onAttach?: (file: File) => void }) {
   const { entries, pending, status, notice, draft, canSend } = advisor;
   const log = useRef<HTMLDivElement>(null);
 
@@ -53,7 +53,7 @@ export function AdvisorPanel({ advisor }: { advisor: Advisor }) {
             ))}
           </div>
         )}
-        <MessageComposer value={draft} onChange={advisor.setDraft} onSend={advisor.send} disabled={!canSend} />
+        <MessageComposer value={draft} onChange={advisor.setDraft} onSend={advisor.send} disabled={!canSend} onAttach={onAttach} />
       </div>
     </section>
   );

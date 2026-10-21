@@ -1,5 +1,7 @@
 import type { ChatResponse, RepresentativeQuestion } from "../api/types";
+import type { DocumentState } from "../hooks/useDocumentUpload";
 import { AnswerArrivedCard } from "./AnswerArrivedCard";
+import { DocumentReviewCard } from "./DocumentReviewCard";
 import { CarChoiceCard } from "./CarChoiceCard";
 import { CaseHeader } from "./CaseHeader";
 import { ComparisonPanel } from "./ComparisonPanel";
@@ -10,12 +12,15 @@ import { PendingState } from "./PendingState";
 import { RepresentativeCard } from "./RepresentativeCard";
 
 /** Renders the latest decisive API response by its ui_state; nothing is inferred from reply text. */
-export function DecisionPanel({ decision, pending, canSend, onSend, answers = [] }: {
+export function DecisionPanel({ decision, pending, canSend, onSend, answers = [], document, onDocumentConfirm, onDocumentClose }: {
   decision: ChatResponse | null;
   pending: boolean;
   canSend: boolean;
   onSend: (text: string) => void;
   answers?: RepresentativeQuestion[]; // the representative's answers that arrived after this decision
+  document?: DocumentState; // a file being read or reviewed
+  onDocumentConfirm?: (message: string) => void;
+  onDocumentClose?: () => void;
 }) {
   return (
     <section className="panel decision" aria-labelledby="decision-title">
@@ -24,6 +29,14 @@ export function DecisionPanel({ decision, pending, canSend, onSend, answers = []
         {pending && <PendingState variant="chip" />}
       </header>
       <div className="decision__body">
+        {document && document.status !== "idle" && (
+          <DocumentReviewCard
+            state={document}
+            onConfirm={onDocumentConfirm ?? onSend}
+            onClose={onDocumentClose ?? (() => undefined)}
+            disabled={!canSend}
+          />
+        )}
         {answers.length > 0 && <AnswerArrivedCard answers={answers} onContinue={onSend} disabled={!canSend} />}
         {decision ? <Decision response={decision} canSend={canSend} onSend={onSend} /> : <Empty />}
       </div>

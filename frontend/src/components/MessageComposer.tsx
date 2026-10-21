@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useRef } from "react";
+import { ACCEPTED_FILES } from "../hooks/useDocumentUpload";
 import { Icon } from "./Icon";
 
 const MAX_LENGTH = 2000; // the API's limit
@@ -8,11 +9,13 @@ export function MessageComposer({
   onChange,
   onSend,
   disabled,
+  onAttach,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSend: (text: string) => void;
   disabled: boolean;
+  onAttach?: (file: File) => void; // a file with the employee's details (reviewed before anything is saved)
 }) {
   const input = useRef<HTMLInputElement>(null);
 
@@ -30,6 +33,23 @@ export function MessageComposer({
       <label htmlFor="advisor-message" className="sr-only">
         הודעה ליועץ
       </label>
+      {onAttach && (
+        <label className={`composer__attach${disabled ? " composer__attach--disabled" : ""}`} title="העלאת קובץ עם פרטים">
+          <span className="sr-only">העלאת קובץ עם פרטים</span>
+          <Icon name="attach" />
+          <input
+            type="file"
+            className="sr-only"
+            accept={ACCEPTED_FILES}
+            disabled={disabled}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = ""; // the same file can be chosen again
+              if (file) onAttach(file);
+            }}
+          />
+        </label>
+      )}
       <input
         ref={input}
         id="advisor-message"
