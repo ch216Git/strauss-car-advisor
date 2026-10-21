@@ -21,10 +21,15 @@ PROVIDER = "gemini"
 API_KEY_VARIABLE = "GEMINI_API_KEY"
 MODEL_VARIABLE = "GEMINI_MODEL"
 TIMEOUT_VARIABLE = "GEMINI_TIMEOUT_SECONDS"
+THINKING_VARIABLE = "GEMINI_THINKING_LEVEL"
 DEFAULT_MODEL = "gemini-flash-latest"
 # Per request. Without it google-genai builds its HTTP client with timeout=None (wait forever) and,
 # with no retry_options, makes a single attempt - so this bounds every generate_content call.
 DEFAULT_TIMEOUT_SECONDS = 60.0
+# Thinking tokens are billed as output. The model only converses and picks tools (every figure and
+# decision comes from the tools), so a low level is enough. "default" leaves the model's own setting.
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
+DEFAULT_THINKING_LEVEL = "low"
 # Retries of one generate_content request after a retryable failure (5xx, timeout, network; not 429):
 # 3 attempts in all, waiting 1s then 2s. Each attempt is bounded by the timeout above.
 RETRY_DELAYS_SECONDS = (1.0, 2.0)
@@ -36,6 +41,7 @@ class GeminiSettings:
     api_key: str = field(repr=False)
     model: str = DEFAULT_MODEL
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    thinking_level: str | None = DEFAULT_THINKING_LEVEL  # None: the model's default
 
     @staticmethod
     def from_env(environ: Mapping[str, str] | None = None) -> "GeminiSettings":
@@ -44,7 +50,9 @@ class GeminiSettings:
         if not api_key:
             raise ProviderError(PROVIDER, ProviderErrorKind.CONFIGURATION, f"{API_KEY_VARIABLE} is not set")
         model = environ.get(MODEL_VARIABLE, "").strip() or DEFAULT_MODEL
-        return GeminiSettings(api_key=api_key, model=model, timeout_seconds=_timeout(environ))
+        return GeminiSettings(
+            api_key=api_key, model=model, timeout_seconds=_timeout(environ), thinking_level=_thinking_level(environ)
+        )
 
 
 class GeminiProvider:
@@ -85,7 +93,8 @@ class GeminiProvider:
 
     def complete(self, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Message:
         """One generate_content request, retried on retryable failures with the very same request."""
-        contents, config = to_gemini_request(system, messages, tools)  # built once, sent unchanged each attempt
+        # Built once, sent unchanged each attempt.
+        contents, config = to_gemini_request(system, messages, tools, self._settings.thinking_level)
         attempts = len(RETRY_DELAYS_SECONDS) + 1
         for attempt in range(1, attempts + 1):
             if attempt > 1:
@@ -99,6 +108,7 @@ class GeminiProvider:
             except Exception as e:  # SDK and transport errors; their text is not reused (see ProviderError)
                 error = _request_error(e)
             else:
+                self._emit_usage(response)
                 return from_gemini_response(response)
 
             self._emit(
@@ -111,6 +121,19 @@ class GeminiProvider:
             self._emit(f"provider retrying in {delay:.1f}s")
             (self._sleep or _sleep)(delay)
         raise AssertionError("unreachable")
+
+    def _emit_usage(self, response: Any) -> None:
+        """Token counts only (never content), to measure what each request costs."""
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return
+        counts = {
+            "input": getattr(usage, "prompt_token_count", None),
+            "cached": getattr(usage, "cached_content_token_count", None),
+            "output": getattr(usage, "candidates_token_count", None),
+            "thinking": getattr(usage, "thoughts_token_count", None),
+        }
+        self._emit("usage " + " ".join(f"{name}={value or 0}" for name, value in counts.items()))
 
     def _emit(self, line: str) -> None:
         if self._events:
@@ -125,10 +148,12 @@ class GeminiProvider:
 # --- Request ----------------------------------------------------------------------
 
 def to_gemini_request(
-    system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]
+    system: str, messages: Sequence[Message], tools: Sequence[ToolSpec], thinking_level: str | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """(contents, config) dicts for models.generate_content."""
     config: dict[str, Any] = {"automatic_function_calling": {"disable": True}}
+    if thinking_level:
+        config["thinking_config"] = {"thinking_level": thinking_level}
     if system:
         config["system_instruction"] = system
     if tools:
@@ -243,6 +268,17 @@ def _timeout(environ: Mapping[str, str]) -> float:
     if not seconds > 0:
         raise ProviderError(PROVIDER, ProviderErrorKind.CONFIGURATION, f"{TIMEOUT_VARIABLE} must be a number of seconds > 0")
     return seconds
+
+
+def _thinking_level(environ: Mapping[str, str]) -> str | None:
+    raw = environ.get(THINKING_VARIABLE, "").strip().lower() or DEFAULT_THINKING_LEVEL
+    if raw == "default":
+        return None
+    if raw not in THINKING_LEVELS:
+        raise ProviderError(
+            PROVIDER, ProviderErrorKind.CONFIGURATION, f"{THINKING_VARIABLE} must be one of {[*THINKING_LEVELS, 'default']}"
+        )
+    return raw
 
 
 def _create_client(api_key: str, timeout_seconds: float) -> Any:

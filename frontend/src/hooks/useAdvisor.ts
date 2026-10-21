@@ -269,6 +269,10 @@ export function useAdvisor() {
       const advisorEntry: Entry = { id: nextId.current++, role: "advisor", text: response.reply };
       // A decisive turn updates the sticky decision; others keep the one already on screen (the ref).
       if (DECISIVE.has(response.ui_state)) commitDecision(response);
+      else if (response.representative && decisionRef.current) {
+        // The representative's questions as they are now (e.g. answered), on the decision kept on screen.
+        commitDecision({ ...decisionRef.current, representative: response.representative });
+      }
       if (response.resume_token !== undefined) tokenRef.current = response.resume_token;
       else resumableRef.current = false; // the server omitted a token (oversized): mark not resumable
       setEntries((current) => {

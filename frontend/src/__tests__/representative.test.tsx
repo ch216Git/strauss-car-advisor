@@ -69,6 +69,38 @@ describe("employee: the representative's answer", () => {
     await waitFor(() => expect(screen.queryByText("התקבלה תשובה מנציג")).not.toBeInTheDocument());
   });
 
+  it("when the employee writes on instead, the answer is no longer new and the question shows as answered", async () => {
+    const { server, user } = await employeeWithOpenQuestion();
+    server.reply("GET /api/sessions/:id", 200, { questions: [ANSWERED] });
+    await act(() => vi.advanceTimersByTimeAsync(REPRESENTATIVE_POLL_MS));
+    await within(decision()).findByRole("region", { name: "התקבלה תשובה מנציג" });
+
+    server.chat(response({ ui_state: "answered", turn: 2, reply: "מה שכר הבסיס שלך?", representative: { questions: [ANSWERED] } }));
+    await user.type(screen.getByLabelText("הודעה ליועץ"), "תודה, בוא נמשיך{Enter}");
+
+    await waitFor(() => expect(screen.queryByText("התקבלה תשובה מנציג")).not.toBeInTheDocument());
+    const card = within(decision()).getByRole("region", { name: "נציג התחבורה ענה" });
+    expect(card).toHaveTextContent("אושר מול הספק: 450 ₪");
+    expect(screen.queryByText("השאלה הועברה לנציג התחבורה")).not.toBeInTheDocument();
+  });
+
+  it("details given before any car show progress without claiming the eligibility step", async () => {
+    const { server, user } = await employeeWithOpenQuestion();
+    server.chat(response({
+      ui_state: "collecting", turn: 2, reply: "כמה נקודות זיכוי?",
+      details: { missing: ["occupation", "current", "credit_points"], provided: ["base_salary"] },
+      representative: { questions: [ANSWERED] },
+    }));
+    await user.type(screen.getByLabelText("הודעה ליועץ"), "שכר בסיס 18000{Enter}");
+
+    const panel = decision();
+    await within(panel).findByText("כדי לחשב את השינוי בנטו, חסרים רק אלה");
+    expect(within(panel).getByText("עוד לא נבחרה חלופה")).toBeInTheDocument();
+    expect(within(panel).queryByText("עבר")).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent("עוד לא נבחר רכב חלופי");
+    expect(panel).toHaveTextContent("שכר בסיס חודשי (ברוטו)נמסר");
+  });
+
   it("does not poll without an open question", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const server = mockServer();

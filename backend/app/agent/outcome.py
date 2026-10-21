@@ -20,8 +20,10 @@ from enum import StrEnum
 from typing import Any
 
 from app.agent.render import RoundCall
+from app.agent.state import ConversationState, EmployeeDetails, missing_details
 from app.agent.tools import ComparisonSummary
 from app.comparison import CompanyCar, Waiver
+from app.rules import Rules
 
 
 class OutcomeKind(StrEnum):
@@ -69,6 +71,33 @@ def round_outcome(calls: Sequence[RoundCall], previous: TurnOutcome | None) -> T
     if latest is None:
         return None
     return replace(latest, comparison=comparison)
+
+
+def carried_forward(
+    previous: TurnOutcome | None, before: EmployeeDetails, state: ConversationState, rules: Rules
+) -> TurnOutcome | None:
+    """For a turn without a decisive outcome (e.g. the employee's details were only saved), what a screen
+    should still show, so it never keeps showing given details as missing:
+      - after missing details: those of them still missing;
+      - otherwise, when this turn saved details: what any comparison still needs (state.missing_details),
+        about the alternative last compared, if any.
+    None when nothing is missing, or nothing changed after a different outcome."""
+    if previous is not None and previous.kind == OutcomeKind.MISSING_DETAILS:
+        missing = tuple(field for field in previous.missing if _still_missing(field, state.details))
+        return replace(previous, missing=missing, comparison=None) if missing else None
+    if state.details == before:
+        return None
+    missing = missing_details(state, rules, state.alternative)
+    if not missing:
+        return None
+    car_id, waiver = _alternative(state.alternative)
+    return TurnOutcome(OutcomeKind.MISSING_DETAILS, car_id, waiver, missing=missing, stage=MissingStage.CALCULATION)
+
+
+def _still_missing(field: str, details: EmployeeDetails) -> bool:
+    if field in ("current", "current.participation"):  # today's car is saved with its participation
+        return details.current is None
+    return getattr(details, field, None) is None
 
 
 def _decisive(call: RoundCall) -> TurnOutcome | None:

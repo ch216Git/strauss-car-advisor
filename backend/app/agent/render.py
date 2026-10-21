@@ -7,7 +7,8 @@ written here from the tools' own results instead of asking the provider to put t
   C1. the comparison is blocked until the representative answers about today's car;
   C2. a question was sent to the representative;
   C3. a car the employee named matches several catalogue cars;
-  D. the alternative cannot be newly selected (a known not-eligible reason).
+  D. the alternative cannot be newly selected (a known not-eligible reason);
+  E. details were only saved, and the tools report which are still missing.
 
 Nothing is decided or calculated here: eligibility, missing fields, estimate status and every figure
 come from the tools (Steps 1-3); this module only formats them. Any other outcome, or an employee
@@ -50,6 +51,7 @@ class ReplyKind(StrEnum):
     QUESTION = "question"  # C2
     CANDIDATES = "candidates"  # C3
     NOT_ELIGIBLE = "not_eligible"  # D
+    DETAILS_SAVED = "details_saved"  # E
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,9 @@ def deterministic_reply(
             for call in calls
         )
         return Rendered(ReplyKind.QUESTION, _question_text(topic, question.content["already_open"])) if others_ok else None
+
+    if not compares:  # E
+        return _details_saved(user_text, calls, state, rules)
 
     # A, B, C1, D: exactly one comparison, and it is the round's last call (nothing changed the state after it).
     if len(compares) != 1 or calls[-1] is not compares[0]:
@@ -218,6 +223,35 @@ def _is(call: RoundCall, name: str, outcome: str) -> bool:
 
 def _missing(call: RoundCall) -> list[str]:
     return list(call.content.get("error", {}).get("missing", ()))
+
+
+# --- E. Details saved -------------------------------------------------------------------------
+
+DETAILS_SAVED_TEXT = "תודה, שמרתי."
+
+
+def _details_saved(user_text: str, calls: Sequence[RoundCall], state: ConversationState, rules: Rules) -> Rendered | None:
+    """Only details were saved while a comparison waits for them: ask for what the last call reports
+    still missing. Not when the message may ask anything (a question mark or a question word), not before
+    a comparison asked for calculation details (eligibility comes first: no salary interview for a car
+    not yet checked), and not when nothing is missing: then the next step is the provider's."""
+    if "?" in user_text or not plain_request(user_text) or not _collecting_for_a_comparison(state):
+        return None
+    if not all(_is(call, "save_employee_details", "ok") or _is(call, "set_current_car", "ok") for call in calls):
+        return None
+    missing = list(calls[-1].content.get("missing", ()))
+    text = missing_text(missing, rules) if missing else None
+    return Rendered(ReplyKind.DETAILS_SAVED, f"{DETAILS_SAVED_TEXT}\n{text}") if text else None
+
+
+def _collecting_for_a_comparison(state: ConversationState) -> bool:
+    """The conversation's last comparison stopped for calculation details (eligibility already passed)."""
+    for message in reversed(state.messages):
+        for result in reversed(message.tool_results):
+            if result.name == "compare_alternative" or result.content.get("ran") == "compare_alternative":
+                error = result.content.get("error") or {}
+                return error.get("code") == "missing_details" and error.get("stage") != "eligibility"
+    return False
 
 
 # --- A. Comparison ----------------------------------------------------------------------------

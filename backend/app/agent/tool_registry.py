@@ -43,36 +43,34 @@ from app.salary import NetBreakdown
 _NUMBER = {"type": "number", "minimum": 0}
 # find_car purposes; only "alternative" continues, to the existing compare_alternative(car=query) path.
 FIND_CAR_PURPOSES = ("alternative", "current", "information")
-_CAR_WORDS = {"type": "string", "description": "One car exactly as the employee wrote it, Hebrew or English"}
+_CAR_WORDS = {"type": "string", "description": "One car as the employee wrote it"}
 
+# Kept short: every spec is sent with every provider request. Rules the code enforces are not repeated.
 SPECS = (
     ToolSpec(
         "save_employee_details",
-        "Save details the employee stated. Pass only what they said; omit anything not said. "
-        "Percentages as numbers (6 means 6%). Returns what is still missing.",
+        "Save details the employee stated; omit what was not said. Percent as a number (6 = 6%). "
+        "Returns what is still missing.",
         {
             "type": "object",
             "properties": {
-                "occupation": {"type": "string", "description": "The occupation as the employee wrote it"},
+                "occupation": {"type": "string", "description": "As the employee wrote it"},
                 "base_salary": _NUMBER,
-                "commissions": {**_NUMBER, "description": "0 if the employee said there are none"},
-                "bonus": {**_NUMBER, "description": "Monthly bonus; 0 if none"},
+                "commissions": {**_NUMBER, "description": "0 if none"},
+                "bonus": {**_NUMBER, "description": "Monthly; 0 if none"},
                 "pension_percent": _NUMBER,
                 "training_fund_percent": {**_NUMBER, "description": "קרן השתלמות; 0 if none"},
                 "credit_points": _NUMBER,
                 "eligible_children": {
-                    "type": "integer", "minimum": 0,
-                    "description": "Children up to the family-track age limit; only for a family-track car",
+                    "type": "integer", "minimum": 0, "description": "Up to the family-track age; family-track car only",
                 },
             },
         },
     ),
     ToolSpec(
         "find_car",
-        "Look up ONE catalogue car from the employee's own words, in Hebrew or English, as written. purpose says "
-        "why, and is required: 'alternative' runs the whole comparison for that car in this same call (exactly as "
-        "compare_alternative with car) - do not look the car up first and compare in another call. "
-        "'current' and 'information' only return the matching cars.",
+        "Find ONE catalogue car from the employee's words. purpose 'alternative' also runs the whole comparison "
+        "in this call (do not compare separately); 'current' and 'information' only return the matches.",
         {
             "type": "object",
             "properties": {
@@ -81,10 +79,8 @@ SPECS = (
                     "type": "string",
                     "enum": list(FIND_CAR_PURPOSES),
                     "description": (
-                        "alternative: the employee asks about getting, switching to or the net-pay effect of this car. "
-                        "current: this is the employee's car today (then set it with set_current_car). "
-                        "information: the employee only asks what this car is, without choosing it. "
-                        "If unsure, use information."
+                        "alternative: getting or switching to it, or its net-pay effect. current: the car today "
+                        "(then set_current_car). information: only what it is. If unsure: information."
                     ),
                 },
             },
@@ -93,8 +89,8 @@ SPECS = (
     ),
     ToolSpec(
         "set_current_car",
-        "Record today's situation: the car (the employee's own words, or a car_id) with the participation the "
-        "employee stated, or waiver=true. An unclear car is not set: the candidates come back to ask about.",
+        "Save today's situation: car (employee's words or car_id) with the participation the employee stated, "
+        "or waiver=true. An unclear car returns candidates to ask about.",
         {
             "type": "object",
             "properties": {
@@ -104,14 +100,13 @@ SPECS = (
     ),
     ToolSpec(
         "list_alternatives",
-        "Cars and waiver option the employee may choose. Participation shown is a catalogue default (estimate).",
+        "Cars (and waiver) the employee may choose; participation shown is a catalogue estimate.",
         {"type": "object", "properties": {}},
     ),
     ToolSpec(
         "compare_alternative",
-        "Calculate net pay today vs the alternative: the car (the employee's own words, or a car_id) or "
-        "waiver=true. Pass participation only if the employee or the representative stated it; otherwise the "
-        "result is an estimate. An unclear car is not compared: the candidates come back to ask about.",
+        "Net pay today vs the alternative: car (employee's words or car_id) or waiver=true. participation only "
+        "if the employee stated it; otherwise the result is an estimate. An unclear car returns candidates.",
         {
             "type": "object",
             "properties": {
@@ -121,7 +116,7 @@ SPECS = (
     ),
     ToolSpec(
         "ask_representative",
-        "Send a question to the transport representative when information is missing or unknown.",
+        "Ask the transport representative something missing or unknown.",
         {
             "type": "object",
             "properties": {

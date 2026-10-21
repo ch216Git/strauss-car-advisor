@@ -326,3 +326,33 @@ def test_plain_request(text: str, plain: bool) -> None:
 )
 def test_choice_request(text: str, choice: bool) -> None:
     assert choice_request(text) is choice
+
+
+# --- The employee's answer is never ignored ------------------------------------------------------------
+
+def test_an_unsaved_answer_is_not_met_with_the_same_question(ctx: ToolContext) -> None:
+    # Real flow: after "אפשר לקבל קרניבל?" the employee wrote "יש לי 6 ילדים"; the model only looked the car
+    # up again, did not save the children, and Python repeated the very same question.
+    first, _ = turn(ctx, "אפשר לקבל קרניבל?", calls(find("קרניבל", "alternative")))
+    events: list[str] = []
+    provider = StrictProvider(
+        calls(find("קרניבל", "alternative")),  # the slip: the answer is not saved
+        calls(("save_employee_details", {"eligible_children": 6}), ("compare_alternative", {"car": "קרניבל"})),
+        Message.assistant(MODEL_REPLY),
+    )
+
+    result = run_turn(first.state, "יש לי 6 ילדים", provider, ctx, events=events.append)
+
+    assert any("repeats the last reply" in e for e in events)
+    assert result.reply != first.reply and result.state.details.eligible_children == 6
+    assert (provider.calls, result.stop) == (3, TurnStop.REPLIED)
+
+
+def test_a_different_reply_is_still_rendered(ctx: ToolContext) -> None:
+    first, _ = turn(ctx, "אפשר לקבל קרניבל?", calls(find("קרניבל", "alternative")))
+    provider = StrictProvider(calls(("save_employee_details", {"eligible_children": 6}), find("קרניבל", "alternative")))
+
+    result = run_turn(first.state, "יש לי 6 ילדים", provider, ctx)
+
+    assert (provider.calls, result.stop) == (1, TurnStop.RENDERED)  # now the calculation details are asked
+    assert result.reply != first.reply

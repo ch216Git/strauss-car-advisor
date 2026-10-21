@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.agent.llm import LLMProvider, Message, ProviderError, ToolResult
+from app.agent.llm import LLMProvider, Message, ProviderError, Role, ToolResult
 from app.agent.outcome import TurnOutcome, round_outcome
 from app.agent.output_check import discloses_estimate, unsupported_numbers
 from app.agent.prompt import system_prompt
@@ -151,6 +151,12 @@ def _rendered_reply(
     rendered = deterministic_reply(user_text, round_calls, state, ctx.rules)
     if rendered is None:
         return None
+    if rendered.kind in _QUESTIONS and rendered.text == _last_reply(state):
+        # Asking the same question again would ignore the employee's answer (e.g. a detail they gave was
+        # not saved): the provider sees the tool results and can save it and continue. A repeated result
+        # (the same comparison asked about again) is fine.
+        emit(f"round {number}: deterministic reply not used ({rendered.kind.value}, repeats the last reply); asking the provider")
+        return None
     estimate = rendered.kind == ReplyKind.COMPARISON and any(
         c.comparison is not None and c.comparison.status == ComparisonStatus.ESTIMATE for c in round_calls
     )
@@ -159,6 +165,15 @@ def _rendered_reply(
         return None
     emit(f"round {number}: deterministic reply ({rendered.kind.value})")
     return rendered.text
+
+
+# Rendered replies that ask the employee something.
+_QUESTIONS = frozenset({ReplyKind.MISSING, ReplyKind.DETAILS_SAVED, ReplyKind.CANDIDATES})
+
+
+def _last_reply(state: ConversationState) -> str | None:
+    """The advisor's last reply text before this turn (this turn's messages so far carry only tool calls)."""
+    return next((m.text for m in reversed(state.messages) if m.role == Role.ASSISTANT and m.text), None)
 
 
 def _outcome(content) -> str:

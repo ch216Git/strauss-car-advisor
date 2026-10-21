@@ -58,7 +58,7 @@ function Decision({ response, canSend, onSend }: { response: ChatResponse; canSe
       return (
         <>
           <CaseHeader response={response} />
-          {response.details && <MissingDetailsCard details={response.details} />}
+          {response.details && <MissingDetailsCard details={response.details} hasAlternative={!!response.alternative} />}
         </>
       );
     case "car_choice":

@@ -14,6 +14,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.agent import TurnStop, run_turn
 from app.agent.llm import LLMProvider, ProviderError
+from app.agent.outcome import carried_forward
 from app.agent.snapshot import SnapshotError, decode_token, encode_token
 from app.agent.tools import ToolContext
 from app.agent.representative import AnswerError, answer_question
@@ -87,7 +89,8 @@ def _gemini() -> LLMProvider:
     from app.env_file import load_env_files
 
     load_env_files()
-    return GeminiProvider(GeminiSettings.from_env())
+    # Value-free lines only: retries, failure categories and token counts.
+    return GeminiProvider(GeminiSettings.from_env(), events=lambda line: log.warning("gemini: %s", line))
 
 
 class _Lazy:
@@ -177,6 +180,10 @@ def create_app(
                     # Atomic turn: the state run_turn returned (with this message and the error reply)
                     # is dropped and the turn number stays, so a retry starts from the same state.
                     return error_response(session.session_id, session.turn, turn)
+                if turn.outcome is None and turn.stop in (TurnStop.REPLIED, TurnStop.RENDERED):
+                    # Details saved without a new decision: still show what is missing, as of now.
+                    carried = carried_forward(session.outcome, session.state.details, turn.state, tool_context.rules)
+                    turn = replace(turn, outcome=carried)
                 committed_turn = session.turn + 1
                 result = chat_response(session.session_id, committed_turn, turn, tool_context)
                 token = encode_token(turn.state, tool_context.rules.version, committed_turn, clock(), key)
@@ -185,6 +192,7 @@ def create_app(
                 raise ApiError(500, "internal_error") from None
             session.state = turn.state  # committed only once the whole response is built
             session.turn = committed_turn
+            session.outcome = turn.outcome
             if token is not None:  # omitted when oversized: the client marks it not resumable
                 response.headers["Cache-Control"] = "no-store"  # a token is employee state; never cache it
                 return result.model_copy(update={"resume_token": token})

@@ -618,3 +618,43 @@ def test_no_events_and_no_retry_on_success() -> None:
     provider.complete("s", [Message.user("x")], [])
 
     assert (len(models.calls), slept, events) == (1, [], [])
+
+
+# --- Thinking level and token usage ------------------------------------------------------------
+
+def test_thinking_level_defaults_to_low_and_is_sent() -> None:
+    settings = GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY})
+    assert settings.thinking_level == "low"
+
+    client = fake_client(response(text_part("שלום")))
+    GeminiProvider(settings, client=client).complete("system", [Message.user("היי")], [FIND_CAR])
+
+    (sent,) = client.models.calls
+    assert sent["config"]["thinking_config"] == {"thinking_level": "low"}
+
+
+@pytest.mark.parametrize("raw, level", [("minimal", "minimal"), (" HIGH ", "high"), ("default", None)])
+def test_thinking_level_from_env(raw: str, level: str | None) -> None:
+    settings = GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY, "GEMINI_THINKING_LEVEL": raw})
+    assert settings.thinking_level == level
+    _, config = to_gemini_request("system", [Message.user("היי")], [], settings.thinking_level)
+    assert ("thinking_config" in config) is (level is not None)  # "default": the model's own setting
+
+
+def test_unknown_thinking_level_is_a_configuration_error() -> None:
+    with pytest.raises(ProviderError) as raised:
+        GeminiSettings.from_env({"GEMINI_API_KEY": FAKE_KEY, "GEMINI_THINKING_LEVEL": "extreme"})
+    assert raised.value.kind == ProviderErrorKind.CONFIGURATION
+
+
+def test_token_usage_is_reported_as_counts_only() -> None:
+    reply = response(text_part("שלום"))
+    reply.usage_metadata = SimpleNamespace(
+        prompt_token_count=1800, cached_content_token_count=None, candidates_token_count=40, thoughts_token_count=120
+    )
+    events: list[str] = []
+    provider = GeminiProvider(GeminiSettings(api_key=FAKE_KEY), client=fake_client(reply), events=events.append)
+
+    provider.complete("system", [Message.user("היי")], [])
+
+    assert events == ["usage input=1800 cached=0 output=40 thinking=120"]

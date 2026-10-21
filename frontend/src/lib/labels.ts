@@ -48,11 +48,17 @@ export type Step = { label: string; status: StepStatus; note: string };
 const STEP_LABELS = ["התאמה למסלול", "פרטים לחישוב", "השוואת נטו"] as const;
 
 /** Progress shown for a screen state; the state itself comes from the API. */
-export function stepsFor(state: UiState, comparisonStatus?: "estimate" | "confirmed"): Step[] | null {
+export function stepsFor(
+  state: UiState,
+  comparisonStatus?: "estimate" | "confirmed",
+  hasAlternative = true, // false: details are collected before any alternative was checked
+): Step[] | null {
   const plan: Record<string, [StepStatus, string][]> = {
     eligibility_check: [["active", "בודקים עכשיו"], ["todo", "רק אחרי ההתאמה"], ["todo", ""]],
     not_eligible: [["blocked", "לא ניתן לבחור כעת"], ["todo", "לא נדרש"], ["todo", ""]],
-    collecting: [["done", "עבר"], ["active", "חסרים פרטים"], ["todo", ""]],
+    collecting: hasAlternative
+      ? [["done", "עבר"], ["active", "חסרים פרטים"], ["todo", ""]]
+      : [["todo", "עוד לא נבחרה חלופה"], ["active", "חסרים פרטים"], ["todo", ""]],
     comparison: [["done", "עבר"], ["done", "התקבלו"], ["done", comparisonStatus === "estimate" ? "הערכה" : "מוכנה"]],
   };
   const key = state === "estimate" || state === "confirmed" || (state === "representative" && comparisonStatus)

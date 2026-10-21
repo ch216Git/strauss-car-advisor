@@ -679,3 +679,50 @@ def test_logs_carry_no_token_or_message_text(ctx: ToolContext, caplog) -> None:
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert token not in logged and "מנהלת מוצר" not in logged
     assert "category=" in logged  # a category is logged, never the cause or the token
+
+
+def test_details_saved_without_a_new_decision_update_the_missing_list(api: Api) -> None:
+    # Real flow: the employee gave the salary, the model only saved it and wrote its own reply. The
+    # turn had no decisive outcome, so the screen kept showing the salary as missing.
+    session_id = api.start()
+    text, step = E001[0]
+    api.provider.add(step)
+    first = api.say(session_id, text)
+    assert first["ui_state"] == "collecting" and "base_salary" in first["details"]["missing"]
+
+    requests = len(api.provider.requests)
+    api.provider.add(calls(("save_employee_details", {"base_salary": 18500})))  # Python writes the reply
+    second = api.say(session_id, "השכר שלי 18,500 ברוטו")
+
+    assert len(api.provider.requests) == requests + 1 and second["reply"].startswith("תודה, שמרתי.")
+    assert second["ui_state"] == "collecting"
+    assert "base_salary" in second["details"]["provided"] and "base_salary" not in second["details"]["missing"]
+    assert second["details"]["missing"] == [f for f in first["details"]["missing"] if f != "base_salary"]
+
+    rest = {"commissions": 0, "bonus": 0, "credit_points": 2.75, "pension_percent": 6, "training_fund_percent": 2.5}
+    api.provider.add(calls(("save_employee_details", rest)), Message.assistant("תודה."))
+    third = api.say(session_id, "אין עמלות ובונוס, 2.75 נקודות זיכוי, פנסיה 6% וקרן השתלמות 2.5%")
+    assert third["ui_state"] == "answered" and "details" not in third  # nothing missing: no stale list
+
+
+def test_details_after_an_answered_question_show_what_is_still_missing(api: Api) -> None:
+    # Real flow: a general question went to the representative and was answered; the employee went on
+    # to give salary details without naming a car, and the model only saved them. The screen kept
+    # showing the representative question.
+    session_id = api.start()
+    api.provider.add(calls(("ask_representative", {"topic": "other", "question": "האם מותר להחליף רכב באמצע הליסינג?"})))
+    assert api.say(session_id, "כן, תעביר לנציג")["ui_state"] == "representative"
+    assert api.client.post("/api/representative/answers", json={
+        "session_id": session_id, "question_id": "Q-1", "answer": "מותר",
+    }).status_code == 200
+
+    api.provider.add(Message.assistant("מצוין. מה שכר הבסיס שלך?"))
+    assert api.say(session_id, "תודה, בוא נמשיך")["ui_state"] == "answered"  # nothing saved: nothing to show
+
+    api.provider.add(calls(("save_employee_details", {"base_salary": 18000})), Message.assistant("כמה נקודות זיכוי?"))
+    body = api.say(session_id, "שכר בסיס 18000")
+
+    assert body["ui_state"] == "collecting" and "alternative" not in body
+    assert body["details"]["provided"] == ["base_salary"]
+    assert "base_salary" not in body["details"]["missing"] and "occupation" in body["details"]["missing"]
+    assert body["representative"]["questions"] == [{"question_id": "Q-1", "topic": "other", "status": "answered", "answer": "מותר"}]

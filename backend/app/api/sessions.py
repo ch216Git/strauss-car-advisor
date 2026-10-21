@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
+from app.agent.outcome import TurnOutcome
 from app.agent.state import ConversationState
 
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
@@ -22,6 +23,7 @@ class Session:
     state: ConversationState
     touched: float
     turn: int = 0  # committed turns
+    outcome: TurnOutcome | None = None  # the last committed turn's outcome, as shown (app.api.main)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 

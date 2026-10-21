@@ -8,7 +8,7 @@ export function CaseHeader({ response }: { response: ChatResponse }) {
   const current: Car | undefined = response.current ?? comparison?.current.car;
   const alternativeKind = response.alternative?.kind ?? comparison?.alternative.kind;
   const alternative: Car | undefined = response.alternative?.car ?? comparison?.alternative.car;
-  const steps = stepsFor(response.ui_state, comparison?.status);
+  const steps = stepsFor(response.ui_state, comparison?.status, !!alternative || alternativeKind === "waiver");
   const tag = carTag(alternative);
 
   return (

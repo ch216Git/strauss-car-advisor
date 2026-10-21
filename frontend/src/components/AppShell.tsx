@@ -9,7 +9,8 @@ import { HistoryDrawer } from "./HistoryDrawer";
 /** Desktop: conversation on the right, decision on the left (RTL order). Narrow screens stack them. */
 export function AppShell({ advisor }: { advisor: Advisor }) {
   const [historyOpen, setHistoryOpen] = useState(false);
-  const answers = useRepresentativeAnswers(advisor.sessionId, advisor.decision, advisor.pending || advisor.readOnly);
+  const sent = advisor.entries.filter((entry) => entry.role === "employee").length;
+  const answers = useRepresentativeAnswers(advisor.sessionId, advisor.decision, advisor.pending || advisor.readOnly, sent);
 
   const open = (id: string) => {
     advisor.openConversation(id);
