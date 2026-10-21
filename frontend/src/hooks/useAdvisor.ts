@@ -4,7 +4,7 @@
 // (sessionStorage); the history list is shared across tabs (localStorage) and refreshed on changes.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createSession, deleteSession, restoreSession, sendChat } from "../api/client";
+import { createSession, deleteSession, getRepresentative, restoreSession, sendChat } from "../api/client";
 import type { ChatResponse, UiState } from "../api/types";
 import {
   type Conversation,
@@ -178,6 +178,43 @@ export function useAdvisor() {
     await startSession();
   }, [startSession]);
 
+  // A saved conversation is opened: if the server no longer has it (a restart), restore it now from
+  // the token, so it is live again at once (the representative's questions return to their queue)
+  // rather than only when the employee next writes. The token's own session id is reused when free.
+  const reconnect = useCallback(async () => {
+    const session = sessionRef.current;
+    const token = tokenRef.current;
+    if (!session || !token || !resumableRef.current) return;
+    const mine = generation.current;
+    const status = await getRepresentative(session);
+    if (mine !== generation.current || status.ok || status.status !== 404) return;
+    const restored = await restoreSession(token);
+    if (mine !== generation.current) return;
+    if (restored.ok) {
+      sessionRef.current = restored.data.session_id;
+      setSessionId(restored.data.session_id);
+      store(SESSION_KEY, restored.data.session_id);
+      setEntries((current) => {
+        persist(current); // the history keeps the session id it now lives under
+        return current;
+      });
+    } else if (restored.status === 410) {
+      resumableRef.current = false;
+      setReadOnly(true);
+      setNotice(TEXT.notResumable);
+    }
+  }, [persist]);
+
+  // A fresh token from between turns (it already holds the representative's answers): keep it.
+  const updateToken = useCallback((token: string) => {
+    if (token === tokenRef.current) return;
+    tokenRef.current = token;
+    setEntries((current) => {
+      persist(current);
+      return current;
+    });
+  }, [persist]);
+
   useEffect(() => {
     if (started.current) return; // once, also under StrictMode's double effects
     started.current = true;
@@ -198,6 +235,7 @@ export function useAdvisor() {
       commitDecision(saved.decision);
       setReadOnly(!saved.resumable);
       setStatus("ready");
+      void reconnect();
       return;
     }
     const stored = readStored(SESSION_KEY);
@@ -212,7 +250,7 @@ export function useAdvisor() {
     } else {
       void beginFresh();
     }
-  }, [beginFresh, commitDecision, refreshList]);
+  }, [beginFresh, commitDecision, reconnect, refreshList]);
 
   // Another tab changed the shared history: refresh the list (and the toggle).
   useEffect(() => {
@@ -353,7 +391,8 @@ export function useAdvisor() {
     commitDecision(saved.decision);
     setReadOnly(!saved.resumable);
     setStatus("ready");
-  }, [commitDecision, resetLocal]);
+    void reconnect();
+  }, [commitDecision, reconnect, resetLocal]);
 
   const removeConversation = useCallback((id: string) => {
     if (pendingRef.current) return;
@@ -387,7 +426,7 @@ export function useAdvisor() {
   return {
     sessionId, status, entries, pending, blocked, readOnly, decision, notice, draft,
     conversations, activeId: activeRef.current, historyEnabled: enabled,
-    setDraft, send, retry, newConversation, retrySession: startSession,
+    setDraft, send, retry, newConversation, retrySession: startSession, updateToken,
     openConversation, removeConversation, removeAll, toggleHistory,
     canSend: status === "ready" && !!sessionId && !pending && !blocked && !readOnly,
     busy: pending,

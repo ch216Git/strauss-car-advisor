@@ -1,7 +1,7 @@
 // The only module that talks to the backend. It sends a session ID and the employee's message,
 // never conversation state, and turns every failure into a safe, typed result.
 
-import type { AnswerRequest, ApiErrorBody, Catalogue, ChatResponse, DocumentDetails, Queue, QueueQuestion, Representative, SessionCreated, SessionRestored } from "./types";
+import type { AnswerRequest, ApiErrorBody, Catalogue, ChatResponse, DocumentDetails, Queue, QueueQuestion, RepresentativeStatus, SessionCreated, SessionRestored } from "./types";
 
 export type ApiFailure = {
   ok: false;
@@ -69,8 +69,8 @@ export function sendChat(sessionId: string, message: string): Promise<ApiResult<
 // --- The transport representative ------------------------------------------------------------
 
 /** The employee's questions and the representative's answers, between turns. */
-export function getRepresentative(sessionId: string): Promise<ApiResult<Representative>> {
-  return request<Representative>(`/api/sessions/${encodeURIComponent(sessionId)}/representative`, { method: "GET" });
+export function getRepresentative(sessionId: string): Promise<ApiResult<RepresentativeStatus>> {
+  return request<RepresentativeStatus>(`/api/sessions/${encodeURIComponent(sessionId)}/representative`, { method: "GET" });
 }
 
 export function getQueue(): Promise<ApiResult<Queue>> {

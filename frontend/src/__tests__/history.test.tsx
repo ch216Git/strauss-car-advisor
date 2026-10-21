@@ -48,7 +48,8 @@ describe("history persistence", () => {
     await waitFor(() => expect(screen.getByLabelText("הודעה ליועץ")).toBeEnabled());
     expect(within(screen.getByRole("log", { name: "הודעות" })).getByText("כמה ישתנה הנטו?")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "ההחלטה שלך" })).getByText("הערכת שינוי בנטו")).toBeInTheDocument();
-    expect(server2.requests).toEqual([]); // nothing fetched to show the stored conversation
+    // Shown without waiting for the network; only a background check that the server still has it.
+    expect(server2.requests.every((r) => r.method === "GET" && r.path.endsWith("/representative"))).toBe(true);
   });
 
   it("keeps the previous decision after a non-decisive turn, across a remount", async () => {
@@ -94,7 +95,7 @@ describe("history persistence", () => {
     expect(titles).toEqual(["שאלה שנייה", "שאלה ראשונה"]);
   });
 
-  it("opening a past conversation makes no network request", async () => {
+  it("opening a past conversation needs no network request to show it", async () => {
     const { server, user } = await start();
     server.chat(response({ ui_state: "answered", reply: "א", resume_token: TOKEN }));
     await say(user, "שאלה ראשונה");
@@ -111,7 +112,8 @@ describe("history persistence", () => {
     await user.click(within(dialog).getByText("שאלה ראשונה")); // the row's open button (title text)
 
     await screen.findByText("א"); // the first conversation's reply is back on screen
-    expect(server.requests.length).toBe(before); // zero new requests
+    // No session is created or restored and nothing is sent: only the background check.
+    expect(server.requests.slice(before).every((r) => r.method === "GET" && r.path.endsWith("/representative"))).toBe(true);
   });
 
   it("never saves an empty conversation", async () => {

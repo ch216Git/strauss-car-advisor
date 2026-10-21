@@ -41,7 +41,7 @@ class SessionStore:
         self._guard = threading.Lock()
 
     def create(self, state: ConversationState | None = None, turn: int = 0) -> Session:
-        """A new session with a fresh id. A restored state is re-stamped with that id and keeps turn."""
+        """A new session. A restored state keeps its conversation_id when free (else a fresh id) and turn."""
         with self._guard:
             self._drop_expired()
             while len(self._sessions) >= self._max:  # drop the least recently used idle session
@@ -49,7 +49,10 @@ class SessionStore:
                 if not idle:
                     break
                 del self._sessions[min(idle, key=lambda s: s.touched).session_id]
-            session_id = uuid.uuid4().hex
+            wanted = state.conversation_id if state is not None else ""
+            # A restored conversation keeps its id when no live session has it (the representative's
+            # queue then keeps pointing at it); otherwise, and for a new one, a fresh id.
+            session_id = wanted if wanted and wanted not in self._sessions else uuid.uuid4().hex
             seeded = ConversationState(session_id) if state is None else replace(state, conversation_id=session_id)
             session = Session(session_id, seeded, self._clock(), turn=turn)
             self._sessions[session_id] = session

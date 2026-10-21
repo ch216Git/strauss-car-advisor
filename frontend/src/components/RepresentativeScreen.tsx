@@ -1,10 +1,12 @@
 // The transport representative's screen: open questions from every conversation, answered here.
 // The answer goes to the server, which checks it against the question's topic; the employee's screen
 // shows it, and the advisor continues from it. No authentication yet (hackathon scope).
+// The queue is also kept in this browser (lib/repQueue), so it survives a server restart.
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { getCatalogue, getQueue, sendAnswer } from "../api/client";
 import type { Car, QueueQuestion } from "../api/types";
+import { type ShownQuestion, cachedQueue, loadQueue, mergeQueue, questionKey } from "../lib/repQueue";
 import { Icon } from "./Icon";
 
 export const QUEUE_POLL_MS = 10000;
@@ -20,14 +22,17 @@ function carLabel(car: Car): string {
 }
 
 export function RepresentativeScreen() {
-  const [questions, setQuestions] = useState<QueueQuestion[] | null>(null);
+  const [questions, setQuestions] = useState<ShownQuestion[] | null>(() => {
+    const cached = cachedQueue();
+    return cached.length > 0 ? cached : null; // shown at once, offline until the server confirms them
+  });
   const [cars, setCars] = useState<Car[]>([]);
   const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     const result = await getQueue();
     if (result.ok) {
-      setQuestions(result.data.questions);
+      setQuestions(mergeQueue(result.data.questions, loadQueue()));
       setFailed(false);
     } else {
       setFailed(true);
@@ -70,14 +75,14 @@ export function RepresentativeScreen() {
               <h2 id="open-title" className="panel__title">ממתינות לתשובה ({open.length})</h2>
               {open.length === 0 && <p className="muted">אין שאלות פתוחות.</p>}
               {open.map((q) => (
-                <QuestionCard key={`${q.session_id}/${q.question_id}`} question={q} cars={cars} onAnswered={load} />
+                <QuestionCard key={questionKey(q)} question={q} cars={cars} onAnswered={load} />
               ))}
             </section>
             {answered.length > 0 && (
               <section aria-labelledby="answered-title" className="rep__section">
                 <h2 id="answered-title" className="panel__title">נענו ({answered.length})</h2>
                 {answered.map((q) => (
-                  <QuestionCard key={`${q.session_id}/${q.question_id}`} question={q} cars={cars} onAnswered={load} />
+                  <QuestionCard key={questionKey(q)} question={q} cars={cars} onAnswered={load} />
                 ))}
               </section>
             )}
@@ -89,7 +94,7 @@ export function RepresentativeScreen() {
 }
 
 function QuestionCard({ question, cars, onAnswered }: {
-  question: QueueQuestion;
+  question: ShownQuestion;
   cars: Car[];
   onAnswered: () => Promise<void>;
 }) {
@@ -102,12 +107,19 @@ function QuestionCard({ question, cars, onAnswered }: {
       </div>
       <h3 id={titleId} className="card__title card__title--small">{question.question}</h3>
       {question.car && <p className="card__note">רכב: {carLabel(question.car)}</p>}
+      {question.offline && (
+        <p className="notice" role="note">
+          {question.status === "open"
+            ? "השיחה הזו לא מחוברת כרגע לשרת. היא תחזור כשהעובד/ת יפתח/תפתח אותה, ואז אפשר יהיה לענות."
+            : "השיחה הזו לא מחוברת כרגע לשרת."}
+        </p>
+      )}
       {question.status === "answered" ? (
         <div className="rep__answer">
           {question.participation !== undefined && <p>השתתפות: {question.participation.toLocaleString("he-IL")} ₪ בחודש</p>}
           {question.answer && <p>{question.answer}</p>}
         </div>
-      ) : (
+      ) : question.offline ? null : (
         <AnswerForm question={question} cars={cars} onAnswered={onAnswered} />
       )}
     </article>

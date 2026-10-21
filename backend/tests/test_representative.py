@@ -2,6 +2,7 @@
 answers flowing back into the conversation. Offline: scripted providers only."""
 
 import itertools
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -201,6 +202,7 @@ def test_the_representative_answers_and_the_employee_continues(client) -> None:
     }]
     assert queue[0]["car"]["car_id"] == "CAR-10"
     status = client.get(f"/api/sessions/{session_id}/representative").json()
+    assert status.pop("resume_token")
     assert status == {"questions": [{"question_id": "Q-1", "topic": "alternative_participation", "status": "open"}]}
 
     answered = client.post("/api/representative/answers", json={
@@ -210,6 +212,9 @@ def test_the_representative_answers_and_the_employee_continues(client) -> None:
     assert (answered.json()["status"], answered.json()["participation"]) == ("answered", 450)
     status = client.get(f"/api/sessions/{session_id}/representative").json()
     assert status["questions"][0] == {"question_id": "Q-1", "topic": "alternative_participation", "status": "answered", "answer": "אושר"}
+    saved, _ = decode_token(status["resume_token"], b"k" * 32, ToolContext.load(), ToolContext.load().rules.version, int(time.time()))
+    assert (saved.rep_questions[0].status, saved.rep_questions[0].participation) == (QuestionStatus.ANSWERED, 450)
+    assert saved.conversation_id == session_id
 
     provider.add(calls(("compare_alternative", {"car_id": "CAR-10"})))
     body = say(client, session_id, "קיבלתי תשובה מהנציג, אפשר לעדכן?")

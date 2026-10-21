@@ -149,6 +149,13 @@ class RepresentativeOut(_Out):
     latest: LatestQuestionOut | None = None
 
 
+class RepresentativeStatusOut(RepresentativeOut):
+    """Between turns (polled by the employee's screen): the questions, and a fresh resume token that
+    already holds the representative's answers, so the browser's saved copy never loses one."""
+
+    resume_token: str | None = None
+
+
 class CarChoiceOut(_Out):
     target: Literal["current", "alternative"]
     options: list[CarOut]
@@ -235,7 +242,7 @@ class SessionCreated(_Out):
 
 
 class SessionRestored(_Out):
-    session_id: str  # a NEW server-generated id; the restored conversation continues under it
+    session_id: str  # the conversation's own id when free, else a new one; it continues under it
     turn: int  # committed turns carried over from the token
     ui_state: UiState = UiState.IDLE
 

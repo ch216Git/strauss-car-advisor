@@ -99,6 +99,11 @@ export interface Representative {
   latest?: { question_id: string; topic: RepTopic; already_open: boolean };
 }
 
+/** Between turns: the questions, and a fresh resume token that already holds the representative's answers. */
+export interface RepresentativeStatus extends Representative {
+  resume_token?: string;
+}
+
 export interface CarChoice {
   target: "current" | "alternative";
   options: Car[];

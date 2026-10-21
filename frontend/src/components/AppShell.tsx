@@ -12,7 +12,9 @@ export function AppShell({ advisor }: { advisor: Advisor }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const documents = useDocumentUpload(advisor.sessionId);
   const sent = advisor.entries.filter((entry) => entry.role === "employee").length;
-  const answers = useRepresentativeAnswers(advisor.sessionId, advisor.decision, advisor.pending || advisor.readOnly, sent);
+  const answers = useRepresentativeAnswers(
+    advisor.sessionId, advisor.decision, advisor.pending || advisor.readOnly, sent, advisor.updateToken,
+  );
 
   const open = (id: string) => {
     advisor.openConversation(id);

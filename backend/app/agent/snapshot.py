@@ -19,6 +19,7 @@ a malformed token into a bad state.
 import base64
 import hmac
 import json
+import re
 import zlib
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
@@ -37,6 +38,7 @@ from app.agent.tools import ToolContext
 from app.comparison import CompanyCar, Situation, Waiver
 
 SCHEMA_VERSION = 1
+_SESSION_ID = re.compile(r"[0-9a-f]{32}")
 TOKEN_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days; older tokens are refused as expired
 
 # Size caps: a token is employee-authored, so bound it before trusting any of it.
@@ -70,6 +72,9 @@ def snapshot(state: ConversationState, rules_version: str, turn: int, issued_at:
         "rules_version": rules_version,
         "iat": issued_at,
         "turn": turn,  # committed turns so far; travels with the state so a restore resumes the count
+        # The session it was issued for: a restore reuses it when free, so the representative's queue
+        # keeps the same conversation. Signed like the rest, so a token cannot claim another session.
+        "sid": state.conversation_id,
         "details": _details_out(state.details),
         "alternative": _situation_out(state.alternative),
         "rep_questions": [_question_out(q) for q in state.rep_questions],
@@ -186,9 +191,11 @@ def _restore(data: Mapping[str, Any], ctx: ToolContext, rules_version: str, now:
     offered = _restore_car_ids(data.get("offered_car_ids"), ctx)
     messages = _restore_messages(data.get("messages"))
 
-    # conversation_id is the new server session's id; the caller sets it by rebuilding on its state.
+    # conversation_id: the session the token was issued for (empty for older tokens); the caller
+    # reuses it when no live session has it, else gives the state a new id.
+    sid = data.get("sid")
     state = ConversationState(
-        conversation_id="",
+        conversation_id=sid if isinstance(sid, str) and _SESSION_ID.fullmatch(sid) else "",
         details=details,
         alternative=alternative,
         rep_questions=questions,

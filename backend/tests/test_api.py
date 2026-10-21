@@ -579,7 +579,7 @@ def test_restore_after_a_restart_continues_the_conversation(ctx: ToolContext) ->
 
     assert restored.status_code == 201
     body = restored.json()
-    assert re.fullmatch(r"[0-9a-f]{32}", body["session_id"]) and body["session_id"] != session_id
+    assert body["session_id"] == session_id  # the same conversation: the representative's queue still points at it
     assert (body["turn"], body["ui_state"]) == (3, "idle")
 
     # The restored session continues: a confirmed comparison uses the restored, grounded details.
@@ -587,6 +587,17 @@ def test_restore_after_a_restart_continues_the_conversation(ctx: ToolContext) ->
     nxt = fresh.say(body["session_id"], "ואטו 3 עם השתתפות 300?")
     assert (nxt["ui_state"], nxt["turn"]) == ("confirmed", 4)
     assert nxt["comparison"]["alternative"]["participation_source"] == "stated"
+
+
+def test_restore_while_the_session_is_live_gets_a_new_id(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    token = run_e001(api, session_id)[-1]["resume_token"]
+
+    restored = api.client.post("/api/sessions/restore", json={"resume_token": token}).json()["session_id"]
+
+    assert re.fullmatch(r"[0-9a-f]{32}", restored) and restored != session_id  # never two sessions on one id
+    assert api.store.get(session_id) is not None
 
 
 def test_grounding_still_enforced_after_restore(ctx: ToolContext) -> None:

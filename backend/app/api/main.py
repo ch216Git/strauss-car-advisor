@@ -41,7 +41,7 @@ from app.api.schemas import (
     HealthOut,
     QueueOut,
     QueueQuestionOut,
-    RepresentativeOut,
+    RepresentativeStatusOut,
     RestoreRequest,
     SessionCreated,
     SessionRestored,
@@ -272,15 +272,19 @@ def create_app(
     # No authentication, like the rest of this hackathon API: before production these routes need
     # a representative login, since the queue shows questions from every conversation.
 
-    @app.get("/api/sessions/{session_id}/representative", response_model=RepresentativeOut,
+    @app.get("/api/sessions/{session_id}/representative", response_model=RepresentativeStatusOut,
              response_model_exclude_none=True, responses={404: {"model": ErrorOut}})
-    def representative(session_id: str, response: Response) -> RepresentativeOut:
-        """The employee's screen polls this between turns to see the representative's answers."""
+    def representative(session_id: str, response: Response) -> RepresentativeStatusOut:
+        """The employee's screen polls this between turns to see the representative's answers (and opens
+        with it to learn whether the server still has the conversation)."""
         session = sessions.get(session_id)
         if session is None:
             raise ApiError(404, "session_not_found")
-        response.headers["Cache-Control"] = "no-store"
-        return representative_status(session.state)
+        response.headers["Cache-Control"] = "no-store"  # the token is employee state; never cache it
+        state, rules = session.state, contexts.get().rules
+        status = representative_status(state)
+        token = encode_token(state, rules.version, session.turn, clock(), key)
+        return RepresentativeStatusOut(**status.model_dump(), resume_token=token)
 
     @app.get("/api/representative/questions", response_model=QueueOut, response_model_exclude_none=True)
     def representative_queue(response: Response) -> QueueOut:
