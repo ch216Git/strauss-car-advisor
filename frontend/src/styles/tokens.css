@@ -13,14 +13,16 @@
   --line-soft: #eef0eb;
   --line-strong: #c9cfc6;
 
-  --accent: #0e6a5b;
-  --accent-strong: #0a4f44;
-  --accent-soft: #e1efeb;
-  --accent-tint: #f2f7f5;
-  --accent-border: #cfe3dd;
-  --accent-chip: #a9c9c1;
+  /* Indigo #24097b; the tints are it mixed with white (soft 12%, tint 5%, border 20%, chip 37%,
+     on-accent-soft 17%), strong is 75% of it. White on accent 15:1, accent on soft 11.7:1. */
+  --accent: #24097b;
+  --accent-strong: #1b075c;
+  --accent-soft: #e5e1ef;
+  --accent-tint: #f4f3f8;
+  --accent-border: #d3cee5;
+  --accent-chip: #aea4ce;
   --on-accent: #ffffff;
-  --on-accent-soft: #d6eae4;
+  --on-accent-soft: #dad5e9;
 
   --loss: #a24a0b;
   --refused-bg: #fbf1ea;
