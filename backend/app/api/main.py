@@ -9,7 +9,10 @@ Responses carry no tool, provider or debug data and no exception text; logs carr
 """
 
 import logging
+import os
+import secrets
 import threading
+import time
 from collections.abc import Callable
 
 from fastapi import FastAPI, Request, Response
@@ -19,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.agent import TurnStop, run_turn
 from app.agent.llm import LLMProvider, ProviderError
+from app.agent.snapshot import SnapshotError, decode_token, encode_token
 from app.agent.tools import ToolContext
 from app.api.mapping import chat_response, error_response
 from app.api.schemas import (
@@ -27,13 +31,17 @@ from app.api.schemas import (
     ErrorDetail,
     ErrorOut,
     HealthOut,
+    RestoreRequest,
     SessionCreated,
+    SessionRestored,
 )
 from app.api.sessions import SessionStore
+from app.env_file import load_env_files
 
 log = logging.getLogger("app.api")
 
 DEV_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")  # the Vite dev server
+HISTORY_KEY_VARIABLE = "HISTORY_SIGNING_KEY"
 
 MESSAGES = {
     "session_not_found": "השיחה לא נמצאה. אפשר להתחיל שיחה חדשה.",
@@ -41,7 +49,22 @@ MESSAGES = {
     "invalid_request": "הבקשה אינה תקינה.",
     "advisor_unavailable": "היועץ אינו זמין כרגע.",
     "internal_error": "מצטער/ת, הייתה תקלה פנימית. אפשר לנסות שוב.",
+    "resume_unavailable": "לא ניתן לשחזר את השיחה הזו. אפשר להתחיל שיחה חדשה.",
 }
+
+
+def history_signing_key() -> bytes:
+    """The HMAC key for resume tokens: from the env (loaded from .env first), else ephemeral.
+
+    load_env_files() must run before reading the variable, or a key in backend/.env is never seen
+    and every restart invalidates existing history. An ephemeral key is per-process by design.
+    """
+    load_env_files()
+    configured = os.environ.get(HISTORY_KEY_VARIABLE, "").strip()
+    if configured:
+        return configured.encode("utf-8")
+    log.warning("%s is not set: resume tokens use an ephemeral key and will not survive a restart", HISTORY_KEY_VARIABLE)
+    return secrets.token_bytes(32)
 
 
 class ApiError(Exception):
@@ -76,10 +99,14 @@ def create_app(
     ctx: ToolContext | None = None,
     store: SessionStore | None = None,
     cors_origins: tuple[str, ...] = DEV_ORIGINS,
+    signing_key: bytes | None = None,
+    clock: Callable[[], int] = lambda: int(time.time()),
 ) -> FastAPI:
     providers = _Lazy(lambda: provider if provider is not None else _gemini())
     contexts = _Lazy(lambda: ctx if ctx is not None else ToolContext.load())
     sessions = store if store is not None else SessionStore()
+    # Resolved once at start-up, after .env is loaded (see history_signing_key); never logged.
+    key = signing_key if signing_key is not None else history_signing_key()
 
     app = FastAPI(title="Strauss car advisor API", version="1")
     app.state.sessions = sessions
@@ -116,7 +143,7 @@ def create_app(
         responses={404: {"model": ErrorOut}, 409: {"model": ErrorOut}, 422: {"model": ErrorOut},
                    500: {"model": ErrorOut}, 503: {"model": ErrorOut}},
     )
-    def chat(request: ChatRequest) -> ChatResponse:
+    def chat(request: ChatRequest, response: Response) -> ChatResponse:
         session = sessions.get(request.session_id)
         if session is None:
             raise ApiError(404, "session_not_found")
@@ -141,16 +168,35 @@ def create_app(
                     # Atomic turn: the state run_turn returned (with this message and the error reply)
                     # is dropped and the turn number stays, so a retry starts from the same state.
                     return error_response(session.session_id, session.turn, turn)
-                response = chat_response(session.session_id, session.turn + 1, turn, tool_context)
+                committed_turn = session.turn + 1
+                result = chat_response(session.session_id, committed_turn, turn, tool_context)
+                token = encode_token(turn.state, tool_context.rules.version, committed_turn, clock(), key)
             except Exception as e:  # never the exception text: it may contain employee values
                 log.error("internal error in turn: %s", type(e).__name__)
                 raise ApiError(500, "internal_error") from None
             session.state = turn.state  # committed only once the whole response is built
-            session.turn += 1
-            return response
+            session.turn = committed_turn
+            if token is not None:  # omitted when oversized: the client marks it not resumable
+                response.headers["Cache-Control"] = "no-store"  # a token is employee state; never cache it
+                return result.model_copy(update={"resume_token": token})
+            return result
         finally:
             sessions.touch(session)
             session.lock.release()
+
+    @app.post(
+        "/api/sessions/restore", response_model=SessionRestored, status_code=201,
+        responses={410: {"model": ErrorOut}, 422: {"model": ErrorOut}},
+    )
+    def restore_session(request: RestoreRequest) -> SessionRestored:
+        tool_context = contexts.get()
+        try:
+            state, turn = decode_token(request.resume_token, key, tool_context, tool_context.rules.version, clock())
+        except SnapshotError as error:
+            log.warning("resume rejected: category=%s", error.category)  # category only; never the token
+            raise ApiError(410, "resume_unavailable") from None
+        session = sessions.create(state=state, turn=turn)
+        return SessionRestored(session_id=session.session_id, turn=session.turn)
 
     return app
 

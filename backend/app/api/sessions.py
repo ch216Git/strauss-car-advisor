@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.agent.state import ConversationState
 
@@ -38,7 +38,8 @@ class SessionStore:
         self._sessions: dict[str, Session] = {}
         self._guard = threading.Lock()
 
-    def create(self) -> Session:
+    def create(self, state: ConversationState | None = None, turn: int = 0) -> Session:
+        """A new session with a fresh id. A restored state is re-stamped with that id and keeps turn."""
         with self._guard:
             self._drop_expired()
             while len(self._sessions) >= self._max:  # drop the least recently used idle session
@@ -47,7 +48,8 @@ class SessionStore:
                     break
                 del self._sessions[min(idle, key=lambda s: s.touched).session_id]
             session_id = uuid.uuid4().hex
-            session = Session(session_id, ConversationState(session_id), self._clock())
+            seeded = ConversationState(session_id) if state is None else replace(state, conversation_id=session_id)
+            session = Session(session_id, seeded, self._clock(), turn=turn)
             self._sessions[session_id] = session
             return session
 

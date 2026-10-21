@@ -110,10 +110,17 @@ export interface ChatResponse {
   comparison?: Comparison;
   representative?: Representative;
   car_choice?: CarChoice;
+  resume_token?: string; // present on a committed turn; the browser keeps it for local history
 }
 
 export interface SessionCreated {
   session_id: string;
+  ui_state: "idle";
+}
+
+export interface SessionRestored {
+  session_id: string; // a new server id; the restored conversation continues under it
+  turn: number;
   ui_state: "idle";
 }
 

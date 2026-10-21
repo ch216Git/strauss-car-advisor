@@ -6,6 +6,7 @@ import type { Car, ChatResponse, Comparison } from "../api/types";
 
 export const SESSION = "a".repeat(32);
 export const SESSION_2 = "b".repeat(32);
+export const TOKEN = "signed.resume-token";
 
 type Reply = { status: number; body?: unknown } | { network: true } | Promise<{ status: number; body?: unknown }>;
 export type Recorded = { method: string; path: string; body: unknown };
@@ -19,7 +20,8 @@ export function mockServer() {
     const method = (init?.method ?? "GET").toUpperCase();
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method, path, body });
-    const key = `${method} ${path.startsWith("/api/sessions/") ? "/api/sessions/:id" : path}`;
+    const collapse = path.startsWith("/api/sessions/") && path !== "/api/sessions/restore";
+    const key = `${method} ${collapse ? "/api/sessions/:id" : path}`;
     const reply = await (queues.get(key)?.shift() ?? { status: 500, body: { error: { code: "unscripted", message: "x" } } });
     if ("network" in reply) throw new TypeError("Failed to fetch");
     return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), {
@@ -46,6 +48,11 @@ export function mockServer() {
       return (body: ChatResponse) => resolve(body);
     },
     deleted: () => queue("DELETE /api/sessions/:id", { status: 204 }),
+    restores: () => requests.filter((r) => r.path === "/api/sessions/restore"),
+    restore: (id = SESSION_2, turn = 1) =>
+      queue("POST /api/sessions/restore", { status: 201, body: { session_id: id, turn, ui_state: "idle" } }),
+    restoreGone: () =>
+      queue("POST /api/sessions/restore", { status: 410, body: { error: { code: "resume_unavailable", message: "לא ניתן לשחזר" } } }),
   };
 }
 

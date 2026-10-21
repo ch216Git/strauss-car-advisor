@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_MESSAGE_LENGTH = 2000
+MAX_RESUME_TOKEN_LENGTH = 64 * 1024  # a resume token is signed client state; bound it in the request
 SESSION_ID_PATTERN = r"^[0-9a-f]{32}$"
 
 
@@ -45,6 +46,12 @@ class ChatRequest(BaseModel):
         if len(value) > MAX_MESSAGE_LENGTH:
             raise ValueError(f"message must be at most {MAX_MESSAGE_LENGTH} characters")
         return value
+
+
+class RestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resume_token: str = Field(min_length=1, max_length=MAX_RESUME_TOKEN_LENGTH)
 
 
 # --- Responses ------------------------------------------------------------------------------
@@ -159,10 +166,17 @@ class ChatResponse(_Out):
     comparison: ComparisonOut | None = None
     representative: RepresentativeOut | None = None
     car_choice: CarChoiceOut | None = None
+    resume_token: str | None = None  # set only on a committed turn; the browser keeps it for history
 
 
 class SessionCreated(_Out):
     session_id: str
+    ui_state: UiState = UiState.IDLE
+
+
+class SessionRestored(_Out):
+    session_id: str  # a NEW server-generated id; the restored conversation continues under it
+    turn: int  # committed turns carried over from the token
     ui_state: UiState = UiState.IDLE
 
 

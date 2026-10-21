@@ -5,4 +5,5 @@ import { afterEach } from "vitest";
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  window.localStorage.clear(); // history lives in localStorage; isolate every test
 });

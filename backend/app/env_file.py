@@ -17,9 +17,10 @@ _LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
 
 
 def load_env_files(
-    paths: Sequence[Path] = DEFAULT_ENV_FILES, environ: MutableMapping[str, str] | None = None
+    paths: Sequence[Path] | None = None, environ: MutableMapping[str, str] | None = None
 ) -> tuple[str, ...]:
     """Set variables from the files that exist and are not already set; return their names only."""
+    paths = DEFAULT_ENV_FILES if paths is None else paths  # resolved here so tests can patch the default
     environ = os.environ if environ is None else environ
     loaded: list[str] = []
     for path in paths:

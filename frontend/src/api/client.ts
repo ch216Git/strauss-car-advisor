@@ -1,7 +1,7 @@
 // The only module that talks to the backend. It sends a session ID and the employee's message,
 // never conversation state, and turns every failure into a safe, typed result.
 
-import type { ApiErrorBody, ChatResponse, SessionCreated } from "./types";
+import type { ApiErrorBody, ChatResponse, SessionCreated, SessionRestored } from "./types";
 
 export type ApiFailure = {
   ok: false;
@@ -48,6 +48,14 @@ export function createSession(): Promise<ApiResult<SessionCreated>> {
 
 export function deleteSession(sessionId: string): Promise<ApiResult<void>> {
   return request<void>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+export function restoreSession(resumeToken: string): Promise<ApiResult<SessionRestored>> {
+  return request<SessionRestored>("/api/sessions/restore", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ resume_token: resumeToken }),
+  });
 }
 
 export function sendChat(sessionId: string, message: string): Promise<ApiResult<ChatResponse>> {

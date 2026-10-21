@@ -392,6 +392,7 @@ def test_answered(api: Api) -> None:
 
     body = api.say(session_id, "מה זה טוסון?")
 
+    assert isinstance(body.pop("resume_token"), str)  # a committed turn carries a token; checked elsewhere
     assert body == {"session_id": session_id, "turn": 1, "reply": "טוסון הוא רכב בקטלוג.", "ui_state": "answered",
                     "retryable": False}
 
@@ -527,3 +528,154 @@ def test_responses_carry_only_the_contract(api: Api) -> None:
         dumped = json.dumps(body, ensure_ascii=False)
         assert not [name for name in TOOL_NAMES if name in dumped]
         assert "netfree" not in dumped.lower() and "<script" not in dumped.lower()
+
+
+# --- Resume without a database (history) --------------------------------------------------------
+
+RESUME_KEY = b"api-test-signing-key-32-bytes!!!"
+
+
+class ResumableApi(Api):
+    """An Api with a fixed signing key, so a token survives a simulated restart (a fresh app+store)."""
+
+    def __init__(self, ctx: ToolContext, provider, store: SessionStore | None = None) -> None:
+        self.provider = provider
+        self.store = store if store is not None else SessionStore()
+        self.client = TestClient(create_app(provider, ctx, self.store, signing_key=RESUME_KEY))
+        self.responses = []
+
+
+def test_committed_turn_carries_a_token_but_temporary_error_does_not(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    api.provider.add(Message.assistant("שלום"), down())
+
+    ok = api.say(session_id, "שלום")
+    failed = api.say(session_id, "שוב")
+
+    assert isinstance(ok["resume_token"], str) and ok["resume_token"]
+    assert "resume_token" not in failed  # a temporary error commits nothing, so no token
+
+
+def test_committed_turn_sets_cache_control_no_store(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    api.provider.add(Message.assistant("שלום"))
+
+    response = api.client.post("/api/chat", json={"session_id": session_id, "message": "שלום"})
+
+    assert response.headers.get("cache-control") == "no-store"
+
+
+def test_restore_after_a_restart_continues_the_conversation(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    token = run_e001(api, session_id)[-1]["resume_token"]
+    assert token
+
+    # A restart: a brand-new app and store, the same signing key, the old session gone.
+    fresh = ResumableApi(ctx, Scripted())
+    restored = fresh.client.post("/api/sessions/restore", json={"resume_token": token})
+
+    assert restored.status_code == 201
+    body = restored.json()
+    assert re.fullmatch(r"[0-9a-f]{32}", body["session_id"]) and body["session_id"] != session_id
+    assert (body["turn"], body["ui_state"]) == (3, "idle")
+
+    # The restored session continues: a confirmed comparison uses the restored, grounded details.
+    fresh.provider.add(calls(("compare_alternative", {"car_id": "CAR-10", "participation": 300})))
+    nxt = fresh.say(body["session_id"], "ואטו 3 עם השתתפות 300?")
+    assert (nxt["ui_state"], nxt["turn"]) == ("confirmed", 4)
+    assert nxt["comparison"]["alternative"]["participation_source"] == "stated"
+
+
+def test_grounding_still_enforced_after_restore(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    token = run_e001(api, session_id)[-1]["resume_token"]
+    fresh = ResumableApi(ctx, Scripted())
+    new_id = fresh.client.post("/api/sessions/restore", json={"resume_token": token}).json()["session_id"]
+
+    # A participation the employee never stated must be refused by the grounding guard, even post-restore:
+    # the model cannot invent 999; the only stated participation is 300 (preserved in the messages).
+    fresh.provider.add(
+        calls(("compare_alternative", {"car_id": "CAR-10", "participation": 999})),
+        Message.assistant("אפשר לאשר את סכום ההשתתפות?"),
+    )
+    body = fresh.say(new_id, "ואם ההשתת99?")
+
+    assert body["ui_state"] == "answered"  # the invented number was refused; no confirmed comparison
+    assert "999" not in body["reply"]
+
+
+def test_restore_rejects_a_bad_token_with_410(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+
+    response = api.client.post("/api/sessions/restore", json={"resume_token": "not-a-real-token"})
+
+    assert response.status_code == 410
+    assert response.json() == {"error": {"code": "resume_unavailable", "message": api_main.MESSAGES["resume_unavailable"]}}
+
+
+def test_restore_rejects_a_token_from_a_different_key(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    api.provider.add(Message.assistant("שלום"))
+    token = api.say(session_id, "שלום")["resume_token"]
+
+    other = ResumableApi(ctx, Scripted(), store=SessionStore())
+    other.client = TestClient(create_app(Scripted(), ctx, other.store, signing_key=b"a-completely-different-key-32!!!"))
+    response = other.client.post("/api/sessions/restore", json={"resume_token": token})
+
+    assert response.status_code == 410 and response.json()["error"]["code"] == "resume_unavailable"
+
+
+def test_oversized_resume_token_is_422(ctx: ToolContext) -> None:
+    api = ResumableApi(ctx, Scripted())
+
+    response = api.client.post("/api/sessions/restore", json={"resume_token": "x" * (64 * 1024 + 1)})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_signing_key_is_read_after_env_files_are_loaded(ctx: ToolContext, monkeypatch, tmp_path) -> None:
+    """A key in backend/.env must be seen: history_signing_key loads .env before reading the variable."""
+    import app.env_file as env_file
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("HISTORY_SIGNING_KEY=from-the-env-file\n", encoding="utf-8")
+    monkeypatch.setattr(env_file, "DEFAULT_ENV_FILES", (env_path,))
+    monkeypatch.delenv("HISTORY_SIGNING_KEY", raising=False)
+
+    key = api_main.history_signing_key()
+
+    assert key == b"from-the-env-file"
+
+
+def test_missing_signing_key_warns_and_is_ephemeral(ctx: ToolContext, monkeypatch, tmp_path, caplog) -> None:
+    import app.env_file as env_file
+
+    monkeypatch.setattr(env_file, "DEFAULT_ENV_FILES", (tmp_path / "absent.env",))
+    monkeypatch.delenv("HISTORY_SIGNING_KEY", raising=False)
+
+    with caplog.at_level("WARNING"):
+        first = api_main.history_signing_key()
+        second = api_main.history_signing_key()
+
+    assert first != second and len(first) == 32  # ephemeral: a new random key each call
+    assert any("HISTORY_SIGNING_KEY" in r.message and "ephemeral" in r.message for r in caplog.records)
+
+
+def test_logs_carry_no_token_or_message_text(ctx: ToolContext, caplog) -> None:
+    api = ResumableApi(ctx, Scripted())
+    session_id = api.start()
+    token = run_e001(api, session_id)[-1]["resume_token"]
+    fresh = ResumableApi(ctx, Scripted())
+
+    with caplog.at_level("WARNING"):
+        fresh.client.post("/api/sessions/restore", json={"resume_token": "tampered." + token})
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert token not in logged and "מנהלת מוצר" not in logged
+    assert "category=" in logged  # a category is logged, never the cause or the token

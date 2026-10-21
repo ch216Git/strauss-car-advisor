@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
-import { SESSION_KEY, TEXT } from "../hooks/useAdvisor";
+import { ACTIVE_KEY, SESSION_KEY, TEXT } from "../hooks/useAdvisor";
 import {
   ATTO_3,
   CARNIVAL,
@@ -49,7 +49,8 @@ describe("session", () => {
 
     expect(server.requests[0]).toMatchObject({ method: "POST", path: "/api/sessions" });
     expect(window.sessionStorage.getItem(SESSION_KEY)).toBe(SESSION);
-    expect(Object.keys(window.sessionStorage)).toEqual([SESSION_KEY]);
+    // Only the session ID and the per-tab active-conversation ID live in sessionStorage; no state.
+    expect(new Set(Object.keys(window.sessionStorage))).toEqual(new Set([SESSION_KEY, ACTIVE_KEY]));
   });
 
   it("reuses a stored session without creating another", async () => {

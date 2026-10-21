@@ -12,6 +12,9 @@ const PATHS = {
   bolt: "M13 3L5 13h6l-1 8 8-10h-6z",
   message: "M4 6h16v10H8l-4 4z",
   compare: "M4 7h11M4 7l3-3M4 7l3 3M20 17H9M20 17l-3-3M20 17l-3 3",
+  history: "M3 12a9 9 0 1 0 3-6.7M3 4v3.5h3.5M12 7v5l3.5 2",
+  trash: "M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13",
+  close: "M6 6l12 12M18 6L6 18",
 } as const;
 
 export type IconName = keyof typeof PATHS;
