@@ -20,6 +20,7 @@ from app.agent.state import (
     RepTopic,
     ShownComparison,
     blocking_questions,
+    confirmed_participation,
     conversation_status,
     missing_details,
     open_questions,
@@ -306,8 +307,9 @@ def compare_alternative(
 ) -> ToolOutcome[ComparisonSummary]:
     """Compare today with one alternative using only saved details.
 
-    participation is the confirmed amount for the alternative car (from the employee or the
-    representative). Without it the catalogue default is used and the result is an ESTIMATE.
+    participation is the confirmed amount for the alternative car (from the employee). Without it, the
+    amount the representative confirmed for that car is used; without either, the catalogue default
+    is used and the result is an ESTIMATE.
     """
     if waiver == (car_id is not None):
         return _error(state, ToolErrorCode.INVALID_ARGUMENT, "give either car_id or waiver=true")
@@ -318,6 +320,8 @@ def compare_alternative(
         return _error(state, ToolErrorCode.NOT_IN_CATALOGUE, f"{car_id!r} is not a catalogue car")
     if participation is not None and participation < 0:
         return _error(state, ToolErrorCode.INVALID_ARGUMENT, f"participation must not be negative: {participation}")
+    if car_id is not None and participation is None:
+        participation = confirmed_participation(state, car_id)  # the representative's answer, when there is one
 
     alternative: Situation = Waiver() if waiver else CompanyCar(car_id, participation)
 

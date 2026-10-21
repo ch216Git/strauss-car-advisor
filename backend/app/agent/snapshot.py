@@ -113,6 +113,7 @@ def _question_out(q: RepQuestion) -> dict[str, Any]:
         "car_id": q.car_id,
         "status": q.status.value,
         "answer": q.answer,
+        "participation": q.participation,
     }
 
 
@@ -260,6 +261,7 @@ def _restore_questions(raw: Any) -> tuple[RepQuestion, ...]:
                 car_id=_opt_text(item.get("car_id"), "question_car_id"),
                 status=_enum(item.get("status"), QuestionStatus, "status"),
                 answer=_opt_text(item.get("answer"), "answer"),
+                participation=_opt_money(item.get("participation"), "question_participation"),
             )
         )
     return tuple(questions)

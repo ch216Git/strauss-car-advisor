@@ -1,7 +1,7 @@
 // The only module that talks to the backend. It sends a session ID and the employee's message,
 // never conversation state, and turns every failure into a safe, typed result.
 
-import type { ApiErrorBody, ChatResponse, SessionCreated, SessionRestored } from "./types";
+import type { AnswerRequest, ApiErrorBody, Catalogue, ChatResponse, Queue, QueueQuestion, Representative, SessionCreated, SessionRestored } from "./types";
 
 export type ApiFailure = {
   ok: false;
@@ -63,5 +63,28 @@ export function sendChat(sessionId: string, message: string): Promise<ApiResult<
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ session_id: sessionId, message }),
+  });
+}
+
+// --- The transport representative ------------------------------------------------------------
+
+/** The employee's questions and the representative's answers, between turns. */
+export function getRepresentative(sessionId: string): Promise<ApiResult<Representative>> {
+  return request<Representative>(`/api/sessions/${encodeURIComponent(sessionId)}/representative`, { method: "GET" });
+}
+
+export function getQueue(): Promise<ApiResult<Queue>> {
+  return request<Queue>("/api/representative/questions", { method: "GET" });
+}
+
+export function getCatalogue(): Promise<ApiResult<Catalogue>> {
+  return request<Catalogue>("/api/representative/cars", { method: "GET" });
+}
+
+export function sendAnswer(answer: AnswerRequest): Promise<ApiResult<QueueQuestion>> {
+  return request<QueueQuestion>("/api/representative/answers", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(answer),
   });
 }

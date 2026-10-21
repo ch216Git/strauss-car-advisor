@@ -135,6 +135,7 @@ class QuestionOut(_Out):
     question_id: str
     topic: Literal["alternative_participation", "current_car_not_in_catalogue", "other"]
     status: Literal["open", "answered"]
+    answer: str | None = None  # the representative's own words, once answered
 
 
 class LatestQuestionOut(_Out):
@@ -167,6 +168,44 @@ class ChatResponse(_Out):
     representative: RepresentativeOut | None = None
     car_choice: CarChoiceOut | None = None
     resume_token: str | None = None  # set only on a committed turn; the browser keeps it for history
+
+
+# --- The transport representative's screen ------------------------------------------------------
+
+MAX_ANSWER_LENGTH = 1000
+
+
+class AnswerRequest(BaseModel):
+    """The representative answers one open question. Which fields are required depends on its topic
+    (app.agent.representative): a participation question needs participation; an unknown current car
+    takes car_id + participation, or words only; any other question takes words only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(pattern=SESSION_ID_PATTERN)
+    question_id: str = Field(pattern=r"^Q-[0-9]{1,4}$")
+    answer: str = Field(default="", max_length=MAX_ANSWER_LENGTH)
+    participation: int | None = Field(default=None, ge=0, le=100_000)  # whole shekels a month
+    car_id: str | None = Field(default=None, max_length=32)
+
+
+class QueueQuestionOut(_Out):
+    session_id: str
+    question_id: str
+    topic: Literal["alternative_participation", "current_car_not_in_catalogue", "other"]
+    status: Literal["open", "answered"]
+    question: str  # as the advisor worded it for the representative
+    car: CarOut | None = None  # the alternative car asked about, or the car answered for today's car
+    answer: str | None = None
+    participation: int | None = None
+
+
+class QueueOut(_Out):
+    questions: list[QueueQuestionOut]  # open first, then answered; most recent conversation first
+
+
+class CatalogueOut(_Out):
+    cars: list[CarOut]
 
 
 class SessionCreated(_Out):

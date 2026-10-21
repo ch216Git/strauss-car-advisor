@@ -11,6 +11,7 @@ from app.agent.agent import TurnResult, TurnStop
 from app.agent.outcome import MissingStage, OutcomeKind, TurnOutcome
 from app.agent.state import ComparisonStatus, ConversationState
 from app.agent.tools import ComparisonSummary, ToolContext
+from app.comparison import display_shekels
 from app.agent.views import (
     CarView,
     ComparisonView,
@@ -23,6 +24,7 @@ from app.agent.views import (
 from app.api.schemas import (
     AlternativeOut,
     CarChoiceOut,
+    CatalogueOut,
     CarOut,
     ChangeOut,
     ChatResponse,
@@ -33,6 +35,7 @@ from app.api.schemas import (
     EligibilityOut,
     LatestQuestionOut,
     QuestionOut,
+    QueueQuestionOut,
     RepresentativeOut,
     SideOut,
     UiState,
@@ -157,6 +160,27 @@ def _comparison(view: ComparisonView) -> ComparisonOut:
     )
 
 
+def representative_status(state: ConversationState) -> RepresentativeOut:
+    """The employee's questions and the representative's answers, between turns (polled by the screen)."""
+    return _representative(state, None) or RepresentativeOut(questions=[])
+
+
+def queue_questions(session_id: str, state: ConversationState, ctx: ToolContext) -> list[QueueQuestionOut]:
+    return [
+        QueueQuestionOut(
+            session_id=session_id, question_id=q.question_id, topic=q.topic.value, status=q.status.value,
+            question=q.text, car=_car(car_view(q.car_id, ctx)), answer=q.answer,
+            participation=display_shekels(q.participation) if q.participation is not None else None,
+        )
+        for q in state.rep_questions
+    ]
+
+
+def catalogue(ctx: ToolContext) -> CatalogueOut:
+    views = (car_view(car_id, ctx) for car_id in ctx.catalog.cars)
+    return CatalogueOut(cars=[_car(view) for view in sorted(filter(None, views), key=lambda v: (v.commercial_name, v.registration_year))])
+
+
 def _representative(state: ConversationState, outcome: TurnOutcome | None) -> RepresentativeOut | None:
     if not state.rep_questions:
         return None
@@ -167,7 +191,8 @@ def _representative(state: ConversationState, outcome: TurnOutcome | None) -> Re
         )
     return RepresentativeOut(
         questions=[
-            QuestionOut(question_id=q.question_id, topic=q.topic.value, status=q.status.value) for q in state.rep_questions
+            QuestionOut(question_id=q.question_id, topic=q.topic.value, status=q.status.value, answer=q.answer)
+            for q in state.rep_questions
         ],
         latest=latest,
     )

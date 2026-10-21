@@ -51,6 +51,8 @@ export function mockServer() {
     restores: () => requests.filter((r) => r.path === "/api/sessions/restore"),
     restore: (id = SESSION_2, turn = 1) =>
       queue("POST /api/sessions/restore", { status: 201, body: { session_id: id, turn, ui_state: "idle" } }),
+    /** Any route, by "METHOD /path" (sessions collapse to /api/sessions/:id). */
+    reply: (key: string, status: number, body?: unknown) => queue(key, { status, body }),
     restoreGone: () =>
       queue("POST /api/sessions/restore", { status: 410, body: { error: { code: "resume_unavailable", message: "לא ניתן לשחזר" } } }),
   };

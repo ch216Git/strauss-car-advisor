@@ -1340,3 +1340,118 @@ button:disabled {
     width: 100%; /* full screen on narrow viewports */
   }
 }
+
+/* --- Representative answers (employee screen) ------------------------------------------------ */
+
+.card--answer {
+  background: var(--accent-tint);
+  border-color: var(--accent-border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.answers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.answers__topic {
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.answers__text {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  white-space: pre-line;
+}
+
+/* --- The representative's screen -------------------------------------------------------------- */
+
+.rep {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.rep__section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rep__question {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rep__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.rep__answer {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  color: var(--ink-soft);
+  white-space: pre-line;
+}
+
+.rep__answer p {
+  margin: 0 0 4px;
+}
+
+.rep__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.rep__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.rep__field input,
+.rep__field select,
+.rep__field textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  padding: 10px 12px;
+  background: var(--surface-muted);
+  font: inherit;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.rep__field input {
+  max-width: 220px;
+}
+
+.rep__form .button {
+  align-self: flex-start;
+}
+
+a.button {
+  text-decoration: none;
+}

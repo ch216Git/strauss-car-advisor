@@ -1,4 +1,5 @@
-import type { ChatResponse } from "../api/types";
+import type { ChatResponse, RepresentativeQuestion } from "../api/types";
+import { AnswerArrivedCard } from "./AnswerArrivedCard";
 import { CarChoiceCard } from "./CarChoiceCard";
 import { CaseHeader } from "./CaseHeader";
 import { ComparisonPanel } from "./ComparisonPanel";
@@ -9,11 +10,12 @@ import { PendingState } from "./PendingState";
 import { RepresentativeCard } from "./RepresentativeCard";
 
 /** Renders the latest decisive API response by its ui_state; nothing is inferred from reply text. */
-export function DecisionPanel({ decision, pending, canSend, onSend }: {
+export function DecisionPanel({ decision, pending, canSend, onSend, answers = [] }: {
   decision: ChatResponse | null;
   pending: boolean;
   canSend: boolean;
   onSend: (text: string) => void;
+  answers?: RepresentativeQuestion[]; // the representative's answers that arrived after this decision
 }) {
   return (
     <section className="panel decision" aria-labelledby="decision-title">
@@ -21,7 +23,10 @@ export function DecisionPanel({ decision, pending, canSend, onSend }: {
         <h2 id="decision-title" className="panel__title">ההחלטה שלך</h2>
         {pending && <PendingState variant="chip" />}
       </header>
-      <div className="decision__body">{decision ? <Decision response={decision} canSend={canSend} onSend={onSend} /> : <Empty />}</div>
+      <div className="decision__body">
+        {answers.length > 0 && <AnswerArrivedCard answers={answers} onContinue={onSend} disabled={!canSend} />}
+        {decision ? <Decision response={decision} canSend={canSend} onSend={onSend} /> : <Empty />}
+      </div>
     </section>
   );
 }

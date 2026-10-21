@@ -67,6 +67,12 @@ class SessionStore:
         with self._guard:
             self._sessions.pop(session_id, None)
 
+    def live(self) -> list[Session]:
+        """Every unexpired session, most recently used first (the representative's queue)."""
+        with self._guard:
+            self._drop_expired()
+            return sorted(self._sessions.values(), key=lambda s: s.touched, reverse=True)
+
     def touch(self, session: Session) -> None:
         session.touched = self._clock()
 

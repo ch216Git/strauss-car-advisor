@@ -87,8 +87,15 @@ export interface Comparison {
 
 export type RepTopic = "alternative_participation" | "current_car_not_in_catalogue" | "other";
 
+export interface RepresentativeQuestion {
+  question_id: string;
+  topic: RepTopic;
+  status: "open" | "answered";
+  answer?: string; // the representative's own words, once answered
+}
+
 export interface Representative {
-  questions: { question_id: string; topic: RepTopic; status: "open" | "answered" }[];
+  questions: RepresentativeQuestion[];
   latest?: { question_id: string; topic: RepTopic; already_open: boolean };
 }
 
@@ -126,4 +133,33 @@ export interface SessionRestored {
 
 export interface ApiErrorBody {
   error: { code: string; message: string; fields?: string[] };
+}
+
+// --- The transport representative's screen ------------------------------------------------------
+
+export interface QueueQuestion {
+  session_id: string;
+  question_id: string;
+  topic: RepTopic;
+  status: "open" | "answered";
+  question: string;
+  car?: Car;
+  answer?: string;
+  participation?: number;
+}
+
+export interface Queue {
+  questions: QueueQuestion[];
+}
+
+export interface Catalogue {
+  cars: Car[];
+}
+
+export interface AnswerRequest {
+  session_id: string;
+  question_id: string;
+  answer: string;
+  participation?: number;
+  car_id?: string;
 }

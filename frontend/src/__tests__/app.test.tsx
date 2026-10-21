@@ -323,7 +323,7 @@ describe("decision states", () => {
     expect(await within(decision()).findByRole("note")).toHaveTextContent("חלק מהנתונים בחישוב הזה הם הערכה");
   });
 
-  it("representative shows the open question without promising an answer", async () => {
+  it("representative shows the open question and where the answer will appear", async () => {
     const { server, user } = await start();
     server.chat(
       response({
@@ -341,7 +341,8 @@ describe("decision states", () => {
 
     const card = await within(decision()).findByRole("region", { name: "השאלה הועברה לנציג התחבורה" });
     expect(card).toHaveTextContent("פתוחה אצל נציג התחבורה");
-    expect(card.textContent).not.toMatch(/כשתגיע|תגיע|אוטומטית|יעודכן|נעדכן/);
+    expect(card).toHaveTextContent("כשהנציג יענה, התשובה תופיע כאן.");
+    expect(card.textContent).not.toMatch(/אוטומטית|יעודכן|נעדכן/); // nothing is recalculated by itself
     expect(within(decision()).getByText("+₪661")).toBeInTheDocument(); // the comparison stays
     expect(within(decision()).queryByRole("button", { name: "לבקש מנציג התחבורה את הסכום המדויק" })).not.toBeInTheDocument();
   });

@@ -19,7 +19,7 @@ from enum import StrEnum
 from app.agent.llm import LLMProvider, Message, ProviderError, ToolResult
 from app.agent.outcome import TurnOutcome, round_outcome
 from app.agent.output_check import discloses_estimate, unsupported_numbers
-from app.agent.prompt import SYSTEM_PROMPT
+from app.agent.prompt import system_prompt
 from app.agent.render import ReplyKind, RoundCall, deterministic_reply
 from app.agent.state import ComparisonStatus, ConversationState, with_messages
 from app.agent.tool_registry import SPECS, execute, start_turn
@@ -75,6 +75,7 @@ def run_turn(
     started = clock()
     ctx = ctx or ToolContext.load()
     state = with_messages(start_turn(state, user_text, ctx), Message.user(user_text))
+    system = system_prompt(state, ctx)  # the representative's answers do not change during a turn
     comparison: ComparisonSummary | None = None  # the last comparison calculated in this turn
     timings: list[RoundTiming] = []
     outcome: TurnOutcome | None = None
@@ -88,7 +89,7 @@ def run_turn(
         emit(f"round {number}: provider call started")
         call_started = clock()
         try:
-            reply = provider.complete(SYSTEM_PROMPT, state.messages, SPECS)
+            reply = provider.complete(system, state.messages, SPECS)
         except ProviderError as e:
             timings.append(RoundTiming(clock() - call_started, None))
             emit(

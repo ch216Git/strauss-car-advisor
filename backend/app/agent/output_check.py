@@ -10,7 +10,7 @@ from typing import Any
 
 from app.agent.grounding import displayed_numbers, employee_texts
 from app.agent.llm import Role
-from app.agent.state import ConversationState
+from app.agent.state import ConversationState, QuestionStatus
 from app.car_search import normalize, prefix_stripped
 
 # A list marker at the start of a line ("1." / "2)") is layout, not a figure.
@@ -36,8 +36,9 @@ def discloses_estimate(text: str) -> bool:
 
 
 def unsupported_numbers(reply: str, state: ConversationState) -> tuple[float, ...]:
-    """Numbers in reply that appear neither in a tool result nor in the employee's own messages."""
-    allowed = _numbers_in_tool_results(state) | {
+    """Numbers in reply that appear neither in a tool result, nor in the employee's own messages, nor in
+    the transport representative's answers."""
+    allowed = _numbers_in_tool_results(state) | _numbers_in_answers(state) | {
         abs(n) for text in employee_texts(state) for n in displayed_numbers(text)
     }
     shown = displayed_numbers(_LIST_MARKER.sub(" ", reply))
@@ -50,6 +51,16 @@ def _numbers_in_tool_results(state: ConversationState) -> set[float]:
         if message.role == Role.TOOL:
             for result in message.tool_results:
                 found.update(_json_numbers(result.content))
+    return found
+
+
+def _numbers_in_answers(state: ConversationState) -> set[float]:
+    found: set[float] = set()
+    for question in state.rep_questions:
+        if question.status == QuestionStatus.ANSWERED:
+            found.update(abs(n) for n in displayed_numbers(question.answer or ""))
+            if question.participation is not None:
+                found.add(abs(float(question.participation)))
     return found
 
 

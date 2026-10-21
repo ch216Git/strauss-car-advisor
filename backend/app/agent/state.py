@@ -52,9 +52,11 @@ class RepQuestion:
     question_id: str
     topic: RepTopic
     text: str
-    car_id: str | None = None  # the alternative car, for alternative_participation questions
+    car_id: str | None = None  # alternative_participation: the alternative car; current_car_not_in_catalogue:
+    # the catalogue car the representative answered stands for today's car
     status: QuestionStatus = QuestionStatus.OPEN
-    answer: str | None = None
+    answer: str | None = None  # the representative's own words
+    participation: float | None = None  # the monthly participation the representative answered, for car_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,17 @@ def open_questions(state: ConversationState, topic: RepTopic | None = None) -> t
     return tuple(
         q for q in state.rep_questions if q.status == QuestionStatus.OPEN and (topic is None or q.topic == topic)
     )
+
+
+def confirmed_participation(state: ConversationState, car_id: str | None) -> float | None:
+    """The alternative car's participation as the representative confirmed it (latest answer), or None."""
+    for q in reversed(state.rep_questions):
+        if (
+            q.topic == RepTopic.ALTERNATIVE_PARTICIPATION and q.status == QuestionStatus.ANSWERED
+            and q.car_id == car_id and q.participation is not None
+        ):
+            return q.participation
+    return None
 
 
 def blocking_questions(state: ConversationState) -> tuple[RepQuestion, ...]:

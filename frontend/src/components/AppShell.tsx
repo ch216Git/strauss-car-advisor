@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Advisor } from "../hooks/useAdvisor";
+import { useRepresentativeAnswers } from "../hooks/useRepresentativeAnswers";
 import { AdvisorPanel } from "./AdvisorPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { Header } from "./Header";
@@ -8,6 +9,7 @@ import { HistoryDrawer } from "./HistoryDrawer";
 /** Desktop: conversation on the right, decision on the left (RTL order). Narrow screens stack them. */
 export function AppShell({ advisor }: { advisor: Advisor }) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const answers = useRepresentativeAnswers(advisor.sessionId, advisor.decision, advisor.pending || advisor.readOnly);
 
   const open = (id: string) => {
     advisor.openConversation(id);
@@ -23,7 +25,13 @@ export function AppShell({ advisor }: { advisor: Advisor }) {
       />
       <main className="layout">
         <AdvisorPanel advisor={advisor} />
-        <DecisionPanel decision={advisor.decision} pending={advisor.pending} canSend={advisor.canSend} onSend={advisor.send} />
+        <DecisionPanel
+          decision={advisor.decision}
+          pending={advisor.pending}
+          canSend={advisor.canSend}
+          onSend={advisor.send}
+          answers={answers}
+        />
       </main>
       {historyOpen && (
         <HistoryDrawer

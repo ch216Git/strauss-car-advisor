@@ -1,4 +1,4 @@
-"""The HTTP API (Step 5): sessions, one chat turn per request, health. Transport only.
+"""The HTTP API (Step 5): sessions, one chat turn per request, the representative's queue, health.
 
 Run from backend/:  uvicorn app.api.main:app
 
@@ -24,13 +24,19 @@ from app.agent.agent import TurnStop, run_turn
 from app.agent.llm import LLMProvider, ProviderError
 from app.agent.snapshot import SnapshotError, decode_token, encode_token
 from app.agent.tools import ToolContext
-from app.api.mapping import chat_response, error_response
+from app.agent.representative import AnswerError, answer_question
+from app.api.mapping import catalogue, chat_response, error_response, queue_questions, representative_status
 from app.api.schemas import (
+    AnswerRequest,
+    CatalogueOut,
     ChatRequest,
     ChatResponse,
     ErrorDetail,
     ErrorOut,
     HealthOut,
+    QueueOut,
+    QueueQuestionOut,
+    RepresentativeOut,
     RestoreRequest,
     SessionCreated,
     SessionRestored,
@@ -50,6 +56,9 @@ MESSAGES = {
     "advisor_unavailable": "היועץ אינו זמין כרגע.",
     "internal_error": "מצטער/ת, הייתה תקלה פנימית. אפשר לנסות שוב.",
     "resume_unavailable": "לא ניתן לשחזר את השיחה הזו. אפשר להתחיל שיחה חדשה.",
+    "question_not_found": "השאלה לא נמצאה.",
+    "already_answered": "כבר נשלחה תשובה לשאלה הזו.",
+    "invalid_answer": "התשובה אינה מתאימה לשאלה. בדקו את השדות המסומנים.",
 }
 
 
@@ -197,6 +206,59 @@ def create_app(
             raise ApiError(410, "resume_unavailable") from None
         session = sessions.create(state=state, turn=turn)
         return SessionRestored(session_id=session.session_id, turn=session.turn)
+
+    # --- The transport representative ---------------------------------------------------------
+    # No authentication, like the rest of this hackathon API: before production these routes need
+    # a representative login, since the queue shows questions from every conversation.
+
+    @app.get("/api/sessions/{session_id}/representative", response_model=RepresentativeOut,
+             response_model_exclude_none=True, responses={404: {"model": ErrorOut}})
+    def representative(session_id: str, response: Response) -> RepresentativeOut:
+        """The employee's screen polls this between turns to see the representative's answers."""
+        session = sessions.get(session_id)
+        if session is None:
+            raise ApiError(404, "session_not_found")
+        response.headers["Cache-Control"] = "no-store"
+        return representative_status(session.state)
+
+    @app.get("/api/representative/questions", response_model=QueueOut, response_model_exclude_none=True)
+    def representative_queue(response: Response) -> QueueOut:
+        tool_context = contexts.get()
+        questions = [q for s in sessions.live() for q in queue_questions(s.session_id, s.state, tool_context)]
+        response.headers["Cache-Control"] = "no-store"
+        return QueueOut(questions=sorted(questions, key=lambda q: q.status != "open"))  # stable: keeps recency
+
+    @app.get("/api/representative/cars", response_model=CatalogueOut)
+    def representative_cars() -> CatalogueOut:
+        return catalogue(contexts.get())
+
+    @app.post(
+        "/api/representative/answers", response_model=QueueQuestionOut, response_model_exclude_none=True,
+        responses={404: {"model": ErrorOut}, 409: {"model": ErrorOut}, 422: {"model": ErrorOut}},
+    )
+    def representative_answer(request: AnswerRequest) -> QueueQuestionOut:
+        session = sessions.get(request.session_id)
+        if session is None:
+            raise ApiError(404, "session_not_found")
+        if not session.lock.acquire(blocking=False):  # never while the employee's turn is running
+            raise ApiError(409, "turn_in_progress")
+        try:
+            tool_context = contexts.get()
+            try:
+                state = answer_question(
+                    session.state, tool_context, request.question_id, request.answer,
+                    participation=request.participation, car_id=request.car_id,
+                )
+            except AnswerError as error:
+                status = {"question_not_found": 404, "already_answered": 409}.get(error.code, 422)
+                raise ApiError(status, error.code, list(error.fields) or None) from None
+            session.state = state
+            log.warning("representative answered a question")  # no values
+            return next(q for q in queue_questions(session.session_id, state, tool_context)
+                        if q.question_id == request.question_id)
+        finally:
+            sessions.touch(session)
+            session.lock.release()
 
     return app
 
