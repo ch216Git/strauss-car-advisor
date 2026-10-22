@@ -94,6 +94,15 @@ button:disabled {
   min-width: 0;
 }
 
+.header__company {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  padding-inline-end: 10px;
+  box-sizing: content-box;
+  border-inline-end: 1px solid var(--line);
+}
+
 .header__logo {
   width: 36px;
   height: 36px;

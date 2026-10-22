@@ -7,6 +7,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { getCatalogue, getQueue, sendAnswer } from "../api/client";
 import type { Car, QueueQuestion } from "../api/types";
 import { type ShownQuestion, cachedQueue, loadQueue, mergeQueue, questionKey } from "../lib/repQueue";
+import { CompanyLogo } from "./CompanyLogo";
 import { Icon } from "./Icon";
 
 export const QUEUE_POLL_MS = 10000;
@@ -53,6 +54,7 @@ export function RepresentativeScreen() {
     <div className="app" dir="rtl" lang="he">
       <header className="header">
         <div className="header__brand">
+          <CompanyLogo />
           <span className="header__logo">
             <Icon name="message" />
           </span>

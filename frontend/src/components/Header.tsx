@@ -1,3 +1,4 @@
+import { CompanyLogo } from "./CompanyLogo";
 import { Icon } from "./Icon";
 
 export function Header({ onNewConversation, onOpenHistory, disabled }: {
@@ -8,6 +9,7 @@ export function Header({ onNewConversation, onOpenHistory, disabled }: {
   return (
     <header className="header">
       <div className="header__brand">
+        <CompanyLogo />
         <span className="header__logo">
           <Icon name="car" />
         </span>
