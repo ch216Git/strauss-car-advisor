@@ -23,6 +23,7 @@ export function Header({ onNewConversation, onOpenHistory, disabled }: {
           <Icon name="plus" size={16} />
           שיחה חדשה
         </button>
+        <a className="button button--ghost" href="#/representative">למסך הנציג</a>
       </div>
     </header>
   );

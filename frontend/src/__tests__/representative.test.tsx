@@ -150,6 +150,13 @@ function question(name: string) {
 const answers = (server: ReturnType<typeof mockServer>) => server.requests.filter((r) => r.path === "/api/representative/answers");
 
 describe("representative screen", () => {
+  it("opens from the employee screen's header", async () => {
+    const server = mockServer();
+    server.session();
+    render(<App />);
+    expect(await screen.findByRole("link", { name: "למסך הנציג" })).toHaveAttribute("href", REPRESENTATIVE_HASH);
+  });
+
   it("never starts an employee session", async () => {
     const { server } = await representativeScreen([]);
     expect(screen.getByText("אין שאלות פתוחות.")).toBeInTheDocument();
