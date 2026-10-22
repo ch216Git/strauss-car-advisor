@@ -31,7 +31,6 @@ Thumbs.db
 
 # Node / React - for later
 node_modules/
-dist/
 build/
 
 # Temporary files
