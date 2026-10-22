@@ -49,6 +49,8 @@ from app.api.schemas import (
 )
 from app.api.sessions import SessionStore
 from app.env_file import load_env_files
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 log = logging.getLogger("app.api")
 
@@ -334,3 +336,7 @@ def _error_json(status: int, code: str, fields: list[str] | None = None) -> JSON
 
 
 app = create_app()
+
+_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
